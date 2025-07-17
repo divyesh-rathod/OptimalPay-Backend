@@ -35,7 +35,12 @@ export class NotFoundError extends AppError {
   constructor(message: string = 'Not found') {
     super(message, 404);
   }
-}
+  }
+  export class InternalServerError extends AppError {
+    constructor(message: string = 'Internal server error') {
+      super(message, 500);
+    }
+  }
 
 // Quick helper functions for common scenarios
 export const throwEmailExists = () => {

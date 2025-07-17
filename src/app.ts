@@ -4,7 +4,8 @@ import helmet from 'helmet';
 import compression from 'compression';
 import morgan from 'morgan';
 import dotenv from 'dotenv';
-
+import { v1Routes } from './routes/v1';
+import { errorHandler } from './middleware/errorHandler';
 // Load environment variables
 dotenv.config();
 
@@ -27,6 +28,10 @@ app.get('/', (req: Request, res: Response) => {
     status: 'running' 
   });
 });
+
+
+app.use('/api/v1', v1Routes);
+app.use(errorHandler);
 
 // Start server
 app.listen(PORT, () => {
