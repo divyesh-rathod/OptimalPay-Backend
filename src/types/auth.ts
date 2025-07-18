@@ -14,3 +14,8 @@ export interface registeredUser{
     updatedAt: Date;
     isLoggedIn: boolean;
 }
+
+export interface UserLoginData {
+  email: string;
+  password: string;
+}

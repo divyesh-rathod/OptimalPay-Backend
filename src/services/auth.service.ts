@@ -1,6 +1,6 @@
 
 import jwt from "jsonwebtoken";
-import { UserSignupData,registeredUser } from "../types/auth";
+import { UserSignupData,registeredUser,UserLoginData } from "../types/auth";
 import {
   throwEmailExists,
   InternalServerError
@@ -8,7 +8,7 @@ import {
   
 
 import { PrismaClient } from '@prisma/client'
-import { hashPassword } from "../utils/bcrypt";
+import { hashPassword,comparePassword } from "../utils/bcrypt";
 
 
 const prisma = new PrismaClient()
@@ -52,4 +52,34 @@ export const emailExists = async (email: string): Promise<boolean> => {
     return false;
   }
   return true
+}
+
+export const login = async (UserLoginData: UserLoginData): Promise<registeredUser> => {
+  try {
+    const user = await prisma.user.findUnique({
+      where: { email: UserLoginData.email }
+    })
+    if (!user) {
+      throw new Error("User not found");
+    }
+    const isValidPassword = await comparePassword(UserLoginData.password, user.password);
+    if (!isValidPassword) {
+      throw new Error("Invalid password");
+    }
+    const token = jwt.sign({ id: user.id, email: user.email }, process.env.JWT_SECRET as string, {
+      expiresIn: '15d'
+    })
+    const updatedUser = await prisma.user.update({
+      where: { id: user.id },
+      data: { isLoggedIn: true }
+    })
+
+    let registeredUser = {
+      ...updatedUser,
+      token
+    };
+    return registeredUser;
+  } catch (error) {
+    throw new Error("Error logging in user");
+  }
 }

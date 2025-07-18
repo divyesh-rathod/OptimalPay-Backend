@@ -1,6 +1,6 @@
 import  { Request, Response, NextFunction } from "express";
-import { createUser } from "../services/auth.service";
-import { sendCreated } from "../utils/response";
+import { createUser,login } from "../services/auth.service";
+import { sendCreated,sendSuccess } from "../utils/response";
 
 
 export const registerUser = async (req: Request, res: Response, next: NextFunction): Promise<void> => {
@@ -11,4 +11,13 @@ export const registerUser = async (req: Request, res: Response, next: NextFuncti
     next(error);
   }
 };
+
+export const loginUser = async (req: Request, res: Response, next: NextFunction): Promise<void> => {
+  try {
+    const user = await login(req.body);
+    sendSuccess(res, "User logged in successfully", user);
+  } catch (error) {
+    next(error);
+  }
+}
 
