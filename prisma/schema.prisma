@@ -21,4 +21,122 @@ model User {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt 
   isLoggedIn Boolean  @default(false)
+  
+  financialProfile FinancialProfile?
+  debts     Debt[] 
+  paymentHistory PaymentHistory[]
+  optimizationStrategies OptimizationStrategy[]
+  
+  @@index([email])
+  @@index([createdAt])
 }
+
+model FinancialProfile {
+  id          String   @id @default(uuid())
+  userId      String   @unique
+  monthly_income Decimal @db.Decimal(10,2)
+  monthly_expenses Decimal @db.Decimal(10,2)
+  updatedAt   DateTime @updatedAt
+  createdAt   DateTime @default(now())
+  user        User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+model Debt{
+  id              String   @id @default(uuid())
+  userId          String
+  name            String
+  type            DebtType
+  originalAmount  Decimal  @db.Decimal(10,2)
+  currentAmount   Decimal  @db.Decimal(10,2)
+  interestRate    Decimal  @db.Decimal(6,4)
+  minimumPayment  Decimal  @db.Decimal(10,2)
+  notes           String?
+  tenure          Int?
+  remainingTenure Int?
+  isActive        Boolean  @default(true)
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+  
+  user            User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  paymentHistory  PaymentHistory[] 
+  plannedPayments PlannedPayment[]
+  
+  @@index([userId, isActive])
+  @@index([userId, type])
+  @@index([currentAmount])
+}
+
+model PaymentHistory{
+  id                     String   @id @default(uuid())
+  debtId                 String
+  userId                 String
+  optimizationStrategyId String?
+  plannedAmount          Decimal? @db.Decimal(10,2)
+  actualAmount           Decimal  @db.Decimal(10,2)
+  principalAmount        Decimal? @db.Decimal(10,2)
+  interestAmount         Decimal? @db.Decimal(10,2)
+  newBalance             Decimal  @db.Decimal(10,2)
+  paymentDate            DateTime
+  notes                  String?
+  createdAt              DateTime @default(now())
+  updatedAt              DateTime @updatedAt
+  
+  debt                   Debt     @relation(fields: [debtId], references: [id])
+  user                   User     @relation(fields: [userId], references: [id])
+  optimizationStrategy   OptimizationStrategy? @relation(fields: [optimizationStrategyId], references: [id])
+  
+  @@index([userId, paymentDate])
+  @@index([debtId, paymentDate])
+  @@index([optimizationStrategyId])
+}
+
+model OptimizationStrategy{
+  id                        String   @id @default(uuid())
+  monthYear                 String
+  userId                    String
+  triggerReason             String?
+  isActive                  Boolean  @default(false)
+  isPossible                Boolean?
+  projectedMonthsToDebtFree Int?
+  projectedDebtFreeDate     DateTime?
+  totalInterestSaved        Decimal? @db.Decimal(10,2)
+  createdAt                 DateTime @default(now())
+  updatedAt                 DateTime @updatedAt
+  
+  user            User     @relation(fields: [userId], references: [id])
+  plannedPayments PlannedPayment[]
+  paymentHistory  PaymentHistory[]
+  
+  @@unique([userId, monthYear])
+  @@index([userId, isActive])
+  @@index([monthYear])
+  @@index([createdAt])
+}
+
+model PlannedPayment{
+  id                     String   @id @default(uuid())
+  optimizationStrategyId String
+  debtId                 String 
+  plannedAmount          Decimal  @db.Decimal(10,2)
+  createdAt              DateTime @default(now())
+  updatedAt              DateTime @updatedAt
+  
+  optimizationStrategy   OptimizationStrategy @relation(fields: [optimizationStrategyId], references: [id], onDelete: Cascade)
+  debt                   Debt     @relation(fields: [debtId], references: [id])
+  
+  @@index([optimizationStrategyId])
+  @@index([debtId])
+  @@unique([optimizationStrategyId, debtId])
+}
+
+enum DebtType{
+  CREDIT_CARD
+  MORTGAGE
+  OTHER
+  AUTO_LOAN
+  STUDENT_LOAN
+  MEDICAL_DEBT
+  PERSONAL_LOAN
+}
+
+
