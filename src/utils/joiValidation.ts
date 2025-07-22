@@ -13,3 +13,9 @@ export const userLoginSchema = joi.object({
     password: joi.string().min(8).required()
 });
 
+export const financialDataSchema = joi.object({
+    monthly_income: joi.number().min(0).required(),
+    monthly_expenses: joi.number().min(0).required()
+});
+
+

@@ -83,3 +83,14 @@ export const login = async (UserLoginData: UserLoginData): Promise<registeredUse
     throw new Error("Error logging in user");
   }
 }
+
+export const logout = async (userId: string): Promise<void> => {
+  try {
+    await prisma.user.update({
+      where: { id: userId },
+      data: { isLoggedIn: false }
+    });
+  } catch (error) {
+    throw new InternalServerError("Error logging out user");
+  }
+}

@@ -1,7 +1,9 @@
 import  jwt  from "jsonwebtoken";
-import { Request, Response, NextFunction} from "express";
+import { Request, Response, NextFunction } from "express";
+import { InternalServerError, AuthError } from "../utils/error";
+import { TokenPayload } from "../types/auth";
 
-const authenticate = async (req: Request, res: Response, next: NextFunction): Promise<void> => {
+export const authenticate = async (req: Request, res: Response, next: NextFunction): Promise<void> => {
     try {
         const authHeader = req.headers.authorization;
         if (!authHeader || !authHeader.startsWith('Bearer ')) {
@@ -13,20 +15,19 @@ const authenticate = async (req: Request, res: Response, next: NextFunction): Pr
             res.status(401).json({ message: 'Unauthorized' });
             return;
         }
-        const decoded = jwt.verify(token, process.env.JWT_SECRET as string);
+        const decoded = jwt.verify(token, process.env.JWT_SECRET as string) as TokenPayload;
         req.user = decoded;
         next();
     } catch (error) {
          console.error('JWT verification error:', error);
         
         if (error instanceof jwt.JsonWebTokenError) {
-            res.status(401).json({ message: 'Invalid token' });
+            throw new AuthError("Invalid token");
         } else if (error instanceof jwt.TokenExpiredError) {
-            res.status(401).json({ message: 'Token expired' });
+            throw new AuthError("Token expired");
         } else {
-            res.status(500).json({ message: 'Authentication error' });
+            throw  new InternalServerError("Authentication error");
         }
     }
    
-
 }
