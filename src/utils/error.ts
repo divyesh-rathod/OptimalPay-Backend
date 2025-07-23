@@ -58,3 +58,19 @@ export const throwUserNotFound = () => {
 export const throwInvalidInput = (message: string) => {
   throw new ValidationError(message);
 };
+
+export const throwInternalError = (
+  error: unknown, 
+  fallbackMessage: string = 'Internal server error',
+  context?: string  // Optional context like "updateDebt", "createUser"
+) => {
+  // Enhanced logging
+  console.error(`🚨 Internal Error${context ? ` in ${context}` : ''}:`, {
+    error,
+    message: error instanceof Error ? error.message : 'Unknown error',
+    stack: error instanceof Error ? error.stack : undefined
+  });
+  
+  const message = error instanceof Error ? error.message : fallbackMessage;
+  throw new InternalServerError(message);
+};
