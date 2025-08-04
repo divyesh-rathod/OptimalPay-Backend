@@ -2,11 +2,10 @@
 import { PrismaClient } from '@prisma/client';
 import { DebtResponse } from '../types/debts';
 
-import { InternalServerError, ValidationError ,throwInternalError} from '../utils/error'
+
 
 const prisma = new PrismaClient();
-// Fix the import issue
-import solver from 'javascript-lp-solver';
+
 
 interface OptimizationResult {
   isOptimal: boolean;
@@ -35,186 +34,7 @@ interface OptimizationResult {
 
 const roundAmount = (amount: number): number => Math.round(amount * 100) / 100;
 
-const calculateMonthlyInterest = (balance: number, annualRate: number): number => {
-  if (balance <= 0) return 0;
-  return roundAmount(balance * (annualRate / 12));
-};
-
-// Primary optimization method - Improved Efficiency Algorithm
-const generateOptimalStrategy = (debts: DebtResponse[], availableBudget: number) => {
-  const totalMinimums = debts.reduce((sum, debt) => sum + debt.minimumPayment, 0);
-  const extraBudget = availableBudget - totalMinimums;
-
-  console.log(`🎯 OPTIMIZATION ENGINE:`);
-  console.log(`   Available Budget: $${availableBudget}`);
-  console.log(`   Total Minimums: $${totalMinimums}`);
-  console.log(`   Extra Budget: $${extraBudget}`);
-
-  // Initialize with minimum payments
-  const strategy = debts.map(debt => ({
-    debtId: debt.id,
-    debtName: debt.name,
-    amount: debt.minimumPayment,
-    minimumPayment: debt.minimumPayment,
-    extraAmount: 0
-  }));
-
-  if (extraBudget <= 0) {
-    console.log(`   ⚠️  No extra budget available - using minimums only`);
-    return strategy;
-  }
-
-  // Check interest rate variance
-  const rates = debts.map(d => d.interestRate);
-  const avgRate = rates.reduce((a, b) => a + b, 0) / rates.length;
-  const variance = rates.reduce((sum, rate) => sum + Math.pow(rate - avgRate, 2), 0) / rates.length;
-  const hasSignificantRateVariance = variance > 0.001; // 0.1% variance threshold
-
-  let remainingExtra = extraBudget;
-
-  if (hasSignificantRateVariance) {
-    // Use avalanche method for different rates
-    console.log(`   📈 Using AVALANCHE: Significant rate variance detected`);
-    const sortedByRate = debts
-      .map((debt, index) => ({ debt, index, rate: debt.interestRate }))
-      .sort((a, b) => b.rate - a.rate);
-
-    for (const { debt, index } of sortedByRate) {
-      if (remainingExtra <= 0) break;
-      
-      const maxAllocation = Math.min(remainingExtra, debt.currentAmount);
-      if (maxAllocation > 0) {
-        strategy[index].amount += maxAllocation;
-        strategy[index].extraAmount = maxAllocation;
-        remainingExtra -= maxAllocation;
-        
-        console.log(`   ✅ ${debt.name}: +$${maxAllocation} (${(debt.interestRate * 100).toFixed(2)}% rate)`);
-      }
-    }
-  } else {
-    // Use efficiency method for similar rates
-    console.log(`   ⚖️  Using EFFICIENCY: Similar rates (avg: ${(avgRate * 100).toFixed(2)}%)`);
-    
-    // Calculate efficiency: balance / minimum payment ratio
-    const sortedByEfficiency = debts
-      .map((debt, index) => ({ 
-        debt, 
-        index, 
-        efficiency: debt.currentAmount / debt.minimumPayment 
-      }))
-      .sort((a, b) => b.efficiency - a.efficiency);
-
-    console.log(`   📊 Efficiency Rankings:`);
-    sortedByEfficiency.forEach(({ debt, efficiency }) => {
-      console.log(`      ${debt.name}: ${efficiency.toFixed(1)}x efficiency`);
-    });
-
-    for (const { debt, index, efficiency } of sortedByEfficiency) {
-      if (remainingExtra <= 0) break;
-      
-      const maxAllocation = Math.min(remainingExtra, debt.currentAmount);
-      if (maxAllocation > 0) {
-        strategy[index].amount += maxAllocation;
-        strategy[index].extraAmount = maxAllocation;
-        remainingExtra -= maxAllocation;
-        
-        console.log(`   ✅ ${debt.name}: +$${maxAllocation} (${efficiency.toFixed(1)}x efficiency)`);
-      }
-    }
-  }
-
-  console.log(`   💰 Remaining Budget: $${remainingExtra}`);
-  return strategy;
-};
-
-// Generate complete debt elimination projection
-const generateFullProjection = (debts: DebtResponse[], monthlyStrategy: any[]) => {
-  console.log(`\n📅 DEBT ELIMINATION PROJECTION:`);
-  
-  let balances = debts.map(debt => debt.currentAmount);
-  let totalInterestPaid = 0;
-  let month = 1;
-  const projection = [];
-  const maxMonths = 600;
-
-  while (balances.some(b => b > 0.01) && month <= maxMonths) {
-    let monthlyInterest = 0;
-    let monthlyPrincipal = 0;
-    const monthlyPayments: Array<{
-      debtName: string;
-      payment: number;
-      interest: number;
-      principal: number;
-      newBalance: number;
-    }> = [];
-
-    // Apply payments
-    balances = balances.map((balance, i) => {
-      if (balance <= 0.01) {
-        monthlyPayments.push({
-          debtName: debts[i].name,
-          payment: 0,
-          interest: 0,
-          principal: 0,
-          newBalance: 0
-        });
-        return 0;
-      }
-
-      const payment = monthlyStrategy[i].amount;
-      const interest = calculateMonthlyInterest(balance, debts[i].interestRate);
-      const principal = Math.max(0, payment - interest);
-      const newBalance = Math.max(0, roundAmount(balance - principal));
-
-      monthlyInterest += interest;
-      monthlyPrincipal += principal;
-
-      monthlyPayments.push({
-        debtName: debts[i].name,
-        payment: payment,
-        interest: roundAmount(interest),
-        principal: roundAmount(principal),
-        newBalance: roundAmount(newBalance)
-      });
-
-      return newBalance;
-    });
-
-    totalInterestPaid += monthlyInterest;
-    const totalDebtRemaining = balances.reduce((sum, b) => sum + b, 0);
-
-    projection.push({
-      month,
-      totalDebtRemaining: roundAmount(totalDebtRemaining),
-      totalInterestPaid: roundAmount(totalInterestPaid),
-      payments: monthlyPayments
-    });
-
-    // Log every 6 months for readability
-    if (month % 6 === 0 || month <= 3) {
-      console.log(`   Month ${month}: Debt $${totalDebtRemaining.toFixed(2)}, Interest $${totalInterestPaid.toFixed(2)}`);
-    }
-
-    month++;
-  }
-
-  console.log(`\n📊 PROJECTION COMPLETE:`);
-  console.log(`   Total Months: ${month - 1}`);
-  console.log(`   Total Interest: $${totalInterestPaid.toFixed(2)}`);
-  console.log(`   Final Balance: $${balances.reduce((sum, b) => sum + b, 0).toFixed(2)}`);
-
-  return {
-    totalMonths: month - 1,
-    totalInterestPaid: roundAmount(totalInterestPaid),
-    projection
-  };
-};
-
-
-
 // Enhanced Backward DP with Full Month-by-Month Strategy
-
-
 const optimizeWithBackwardDP = (debts: DebtResponse[], availableBudget: number) => {
   console.log('\n⏮️ ENHANCED A* DYNAMIC PROGRAMMING:');
   
@@ -768,11 +588,11 @@ export const calculateOptimalStrategy = async (userId: string): Promise<Optimiza
       prisma.debt.findMany({ where: { userId, isActive: true } }),
       prisma.financialProfile.findUnique({ where: { userId } })
     ]);
-
+    
     if (!financialProfile) {
       throw new Error('Financial profile not found');
     }
-
+    
     if (debts.length === 0) {
       console.log('📭 No active debts found');
       return {
@@ -804,140 +624,55 @@ export const calculateOptimalStrategy = async (userId: string): Promise<Optimiza
     if (availableBudget < totalMinimums) {
       throw new Error(`Insufficient budget: Need $${totalMinimums}, have $${availableBudget}`);
     }
-
-    // Run primary optimization
-    const primaryStrategy = generateOptimalStrategy(debtResponses, availableBudget);
     
-    // Run DP optimization  
+    // 🔥 ONLY RUN DP OPTIMIZATION
     const dpResult = optimizeWithBackwardDP(debtResponses, availableBudget);
-
-    // 🔥 NEW: Show complete DP strategy analysis
-    showCompleteStrategy(dpResult);
-
-    console.log(`\n🆚 STRATEGY COMPARISON:`);
-    if (dpResult.projection) {
-      console.log(`DP Strategy: ${dpResult.projection.totalMonths} months, $${dpResult.projection.totalInterestPaid} interest`);
-    }
-
-    // Use primary strategy (efficiency-based)
-    const finalStrategy = primaryStrategy;
-
-    // Generate projection
-    const projectionResult = generateFullProjection(debtResponses, finalStrategy);
-
-    console.log(`Efficiency Greedy: ${projectionResult.totalMonths} months, $${projectionResult.totalInterestPaid} interest`);
-
-    // 🔥 NEW: Show detailed comparison
-    console.log('\n📈 =============== DETAILED STRATEGY COMPARISON ===============');
-    console.log(`🎯 DP Strategy:          ${dpResult.projection?.totalMonths || 'N/A'} months, $${dpResult.projection?.totalInterestPaid || 'N/A'} interest`);
-    console.log(`🎯 Efficiency Strategy:  ${projectionResult.totalMonths} months, $${projectionResult.totalInterestPaid} interest`);
     
-    if (dpResult.projection) {
-      const timeSaved = projectionResult.totalMonths - dpResult.projection.totalMonths;
-      const interestSaved = projectionResult.totalInterestPaid - dpResult.projection.totalInterestPaid;
-      console.log(`💡 DP Advantage:         ${timeSaved} months faster, $${interestSaved.toFixed(2)} less interest`);
-    }
-
+    // Show complete DP strategy analysis
+    showCompleteStrategy(dpResult);
+    
     console.log('\n🏁 =============== OPTIMIZATION COMPLETE ===============');
-
-    return {
-      isOptimal: true,
-      totalInterestSaved: 0,
-      projectedMonths: projectionResult.totalMonths,
-      plannedPayments: finalStrategy,
-      monthlyProjection: projectionResult.projection.slice(0, 36)
-    };
-
-  } catch (error) {
-    console.error('❌ Optimization failed:', error);
-    throw new Error(`Optimization failed: ${error}`);
-  }
+    
+    // 🔥 NEW: Transform DP results to controller format
+    const plannedPayments = debtResponses.map((debt, index) => ({
+      debtId: debt.id,
+      debtName: debt.name,
+      amount: dpResult.payments[index] || debt.minimumPayment,
+      minimumPayment: debt.minimumPayment,
+      extraAmount: Math.max(0, (dpResult.payments[index] || debt.minimumPayment) - debt.minimumPayment)
+    }));
+    
+    const calculateSimpleInterestSavings = () => {
+      const totalDebt = debtResponses.reduce((sum, debt) => sum + debt.currentAmount, 0);
+      const weightedAvgInterestRate = debtResponses.reduce((sum, debt) => 
+    sum + (debt.interestRate * debt.currentAmount), 0) / totalDebt;
+      
+  // Estimate savings: DP eliminates debt faster = less total interest
+  const dpMonths = dpResult.projection?.totalMonths || 24;
+  const estimatedMinimumMonths = Math.max(dpMonths * 1.5, dpMonths + 12); // Conservative estimate
+  
+  const dpInterest = dpResult.projection?.totalInterestPaid || 0;
+  const estimatedMinimumInterest = totalDebt * weightedAvgInterestRate * (estimatedMinimumMonths / 12) * 0.6; // 60% of simple interest
+  
+  return Math.max(0, estimatedMinimumInterest - dpInterest);
 };
 
-// Main export function
-// export const calculateOptimalStrategy = async (userId: string): Promise<OptimizationResult> => {
-//   try {
-//     console.log('\n🚀 =============== DEBT OPTIMIZATION START ===============');
-    
-//     // Fetch data
-//     const [debts, financialProfile] = await Promise.all([
-//       prisma.debt.findMany({ where: { userId, isActive: true } }),
-//       prisma.financialProfile.findUnique({ where: { userId } })
-//     ]);
+const totalInterestSaved = calculateSimpleInterestSavings();
 
-//     if (!financialProfile) {
-//       throw new Error('Financial profile not found');
-//     }
+// 🔥 Return DP results only
+return {
+  isOptimal: true,
+  totalInterestSaved: roundAmount(totalInterestSaved),
+  projectedMonths: dpResult.projection?.totalMonths || 0,
+  plannedPayments: plannedPayments,
+  monthlyProjection: dpResult.projection?.projection?.slice(0, 36) || []
+};
 
-//     if (debts.length === 0) {
-//       console.log('📭 No active debts found');
-//       return {
-//         isOptimal: true,
-//         totalInterestSaved: 0,
-//         projectedMonths: 0,
-//         plannedPayments: [],
-//         monthlyProjection: []
-//       };
-//     }
-
-//     // Convert to proper format
-//     const debtResponses: DebtResponse[] = debts.map(debt => ({
-//       ...debt,
-//       originalAmount: Number(debt.originalAmount),
-//       currentAmount: Number(debt.currentAmount),
-//       interestRate: Number(debt.interestRate),
-//       minimumPayment: Number(debt.minimumPayment),
-//       remainingTenure: debt.remainingTenure ? Number(debt.remainingTenure) : null,
-//       tenure: debt.tenure ? Number(debt.tenure) : null,
-//     }));
-
-//     const availableBudget = Number(financialProfile.monthly_income) - Number(financialProfile.monthly_expenses);
-
-//     console.log(`💼 Portfolio: ${debts.length} debts, $${debtResponses.reduce((sum, d) => sum + d.currentAmount, 0).toFixed(2)} total`);
-
-//     // Check feasibility
-//     const totalMinimums = debtResponses.reduce((sum, debt) => sum + debt.minimumPayment, 0);
-//     if (availableBudget < totalMinimums) {
-//       throw new Error(`Insufficient budget: Need $${totalMinimums}, have $${availableBudget}`);
-//     }
-
-//     // Run primary optimization
-//     const primaryStrategy = generateOptimalStrategy(debtResponses, availableBudget);
-    
-//     // Run DP optimization  
-//       const dpResult = optimizeWithBackwardDP(debtResponses, availableBudget);
-      
-
-//     console.log(`\n🆚 STRATEGY COMPARISON:`);
-//     if (dpResult.projection) {
-//       console.log(`DP Strategy: ${dpResult.projection.totalMonths} months, $${dpResult.projection.totalInterestPaid} interest`);
-//     }
-
-//     // Use primary strategy (efficiency-based)
-//     const finalStrategy = primaryStrategy;
-
-//     // Generate projection
-//       const projectionResult = generateFullProjection(debtResponses, finalStrategy);
-      
-      
-
-//     console.log(`Efficiency Greedy: ${projectionResult.totalMonths} months, $${projectionResult.totalInterestPaid} interest`);
-
-//     console.log('\n🏁 =============== OPTIMIZATION COMPLETE ===============');
-
-//     return {
-//       isOptimal: true,
-//       totalInterestSaved: 0, // Can calculate vs minimum payments scenario
-//       projectedMonths: projectionResult.totalMonths,
-//       plannedPayments: finalStrategy,
-//       monthlyProjection: projectionResult.projection.slice(0, 36) // Limit to 3 years for API response
-//     };
-
-//   } catch (error) {
-//     console.error('❌ Optimization failed:', error);
-//     throw new Error(`Optimization failed: ${error}`);
-//   }
-// };
+} catch (error) {
+  console.error('❌ Optimization failed:', error);
+  throw new Error(`Optimization failed: ${error}`);
+}
+};
 
 // Additional export for windfall calculations
 export const calculateWindfallAllocation = async (userId: string, windfallAmount: number) => {
@@ -954,8 +689,9 @@ export const calculateWindfallAllocation = async (userId: string, windfallAmount
       tenure: debt.tenure ? Number(debt.tenure) : null,
     }));
 
-    return generateOptimalStrategy(debtResponses, windfallAmount);
+    return optimizeWithBackwardDP(debtResponses, windfallAmount);
   } catch (error) {
     throw new Error(`Windfall calculation failed: ${error}`);
   }
 };
+
