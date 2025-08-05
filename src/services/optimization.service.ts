@@ -1,54 +1,350 @@
 // src/services/optimization.service.ts
 import { PrismaClient } from '@prisma/client';
 import { DebtResponse } from '../types/debts';
+import { OptimizationResult,StrategyWithLookahead } from '../types/optimization';
 
 const prisma = new PrismaClient();
 
-interface OptimizationResult {
-  isOptimal: boolean;
-  totalInterestSaved: number;
-  projectedMonths: number;
-  plannedPayments: Array<{
-    debtId: string;
-    debtName: string;
-    amount: number;
-    minimumPayment: number;
-    extraAmount: number;
-  }>;
-  monthlyProjection: Array<{
-    month: number;
-    totalDebtRemaining: number;
-    totalInterestPaid: number;
-    payments: Array<{
-      debtName: string;
-      payment: number;
-      interest: number;
-      principal: number;
-      newBalance: number;
-    }>;
-  }>;
-}
-interface StrategyWithLookahead {
-  payments: number[];
-  name: string;
-  priority?: number;
-  lookaheadScore?: number;
-  lookaheadData?: {
-    score: number;
-    totalDebtReduction: number;
-    interestCost: number;
-    monthsToComplete: number;
-    balancesAfterLookahead: number[];
-  };
+const roundAmount = (amount: number): number => Math.round(amount * 100) / 100;
+
+// Add this at the TOP of your optimization.service.ts file
+
+interface CategorizedDebts {
+  highPriority: DebtResponse[];   // Credit cards, medical, high-interest
+  lowPriority: DebtResponse[];    // Mortgage, large auto loans
+  mediumPriority: DebtResponse[]; // Student loans, personal loans, normal auto
 }
 
-const roundAmount = (amount: number): number => Math.round(amount * 100) / 100;
+interface CompleteDebtPlan {
+  phase1: {
+    months: number;
+    debts: string[];
+    freedBudget: number;
+    totalInterest: number;
+  };
+  phase2: {
+    months: number;
+    debts: string[];
+    acceleratedPayment: number;
+    interestSaved: number;
+    totalInterest: number;
+  };
+  totalMonths: number;
+  totalInterest: number;
+  mortgageStrategy: string;
+}
+
+// Enhanced categorization using your debt types
+const categorizeDebts = (debts: DebtResponse[]): CategorizedDebts => {
+  const highPriority: DebtResponse[] = [];
+  const lowPriority: DebtResponse[] = [];
+  const mediumPriority: DebtResponse[] = [];
+  
+  debts.forEach(debt => {
+    // RULE 1: MORTGAGE always gets minimum payment only
+    if (debt.type === 'MORTGAGE') {
+      lowPriority.push(debt);
+      console.log(`   🏠 LOW PRIORITY (Mortgage): ${debt.name} - $${debt.currentAmount.toFixed(2)} @ ${(debt.interestRate * 100).toFixed(1)}%`);
+    }
+    // RULE 2: CREDIT_CARD always high priority (high interest)
+    else if (debt.type === 'CREDIT_CARD') {
+      highPriority.push(debt);
+      console.log(`   💳 HIGH PRIORITY (Credit Card): ${debt.name} - $${debt.currentAmount.toFixed(2)} @ ${(debt.interestRate * 100).toFixed(1)}%`);
+    }
+    // RULE 3: MEDICAL_DEBT high priority (avoid collections)
+    else if (debt.type === 'MEDICAL_DEBT') {
+      highPriority.push(debt);
+      console.log(`   🏥 HIGH PRIORITY (Medical): ${debt.name} - $${debt.currentAmount.toFixed(2)}`);
+    }
+    // RULE 4: AUTO_LOAN - depends on amount
+    else if (debt.type === 'AUTO_LOAN') {
+      if (debt.currentAmount > 30000) {
+        lowPriority.push(debt);
+        console.log(`   🚗 LOW PRIORITY (Large Auto): ${debt.name} - $${debt.currentAmount.toFixed(2)} @ ${(debt.interestRate * 100).toFixed(1)}%`);
+      } else {
+        mediumPriority.push(debt);
+        console.log(`   🚙 MEDIUM PRIORITY (Auto): ${debt.name} - $${debt.currentAmount.toFixed(2)} @ ${(debt.interestRate * 100).toFixed(1)}%`);
+      }
+    }
+    // RULE 5: STUDENT_LOAN - usually medium (lower interest)
+    else if (debt.type === 'STUDENT_LOAN') {
+      if (debt.interestRate > 0.08) {
+        mediumPriority.push(debt);
+        console.log(`   🎓 MEDIUM PRIORITY (Student High Rate): ${debt.name} - $${debt.currentAmount.toFixed(2)} @ ${(debt.interestRate * 100).toFixed(1)}%`);
+      } else {
+        lowPriority.push(debt);
+        console.log(`   📚 LOW PRIORITY (Student Low Rate): ${debt.name} - $${debt.currentAmount.toFixed(2)} @ ${(debt.interestRate * 100).toFixed(1)}%`);
+      }
+    }
+    // RULE 6: PERSONAL_LOAN - depends on interest rate
+    else if (debt.type === 'PERSONAL_LOAN') {
+      if (debt.interestRate > 0.12) {
+        highPriority.push(debt);
+        console.log(`   💰 HIGH PRIORITY (Personal High Rate): ${debt.name} - $${debt.currentAmount.toFixed(2)} @ ${(debt.interestRate * 100).toFixed(1)}%`);
+      } else {
+        mediumPriority.push(debt);
+        console.log(`   💵 MEDIUM PRIORITY (Personal): ${debt.name} - $${debt.currentAmount.toFixed(2)} @ ${(debt.interestRate * 100).toFixed(1)}%`);
+      }
+    }
+    // RULE 7: OTHER - use smart logic
+    else if (debt.type === 'OTHER') {
+      // For OTHER type, use amount and interest rate to decide
+      if (debt.currentAmount > 50000 && debt.interestRate < 0.08) {
+        lowPriority.push(debt);
+        console.log(`   📦 LOW PRIORITY (Other Large): ${debt.name} - $${debt.currentAmount.toFixed(2)} @ ${(debt.interestRate * 100).toFixed(1)}%`);
+      } else if (debt.interestRate > 0.15 || debt.currentAmount < 5000) {
+        highPriority.push(debt);
+        console.log(`   ⚡ HIGH PRIORITY (Other): ${debt.name} - $${debt.currentAmount.toFixed(2)} @ ${(debt.interestRate * 100).toFixed(1)}%`);
+      } else {
+        mediumPriority.push(debt);
+        console.log(`   📋 MEDIUM PRIORITY (Other): ${debt.name} - $${debt.currentAmount.toFixed(2)} @ ${(debt.interestRate * 100).toFixed(1)}%`);
+      }
+    }
+  });
+  
+  // Summary
+  console.log(`\n   📊 Categorization Summary:`);
+  console.log(`      High Priority: ${highPriority.length} debts ($${highPriority.reduce((s,d) => s + d.currentAmount, 0).toFixed(2)})`);
+  console.log(`      Medium Priority: ${mediumPriority.length} debts ($${mediumPriority.reduce((s,d) => s + d.currentAmount, 0).toFixed(2)})`);
+  console.log(`      Low Priority: ${lowPriority.length} debts ($${lowPriority.reduce((s,d) => s + d.currentAmount, 0).toFixed(2)})`);
+  
+  return { highPriority, lowPriority, mediumPriority };
+};
+
+// Smart budget allocation based on debt types
+const allocateBudgetByPriority = (
+  categories: CategorizedDebts, 
+  totalBudget: number
+): { highBudget: number; mediumBudget: number; lowBudget: number } => {
+  // Calculate minimum payments for each category
+  const lowMinimums = categories.lowPriority.reduce((sum, d) => sum + d.minimumPayment, 0);
+  const mediumMinimums = categories.mediumPriority.reduce((sum, d) => sum + d.minimumPayment, 0);
+  const highMinimums = categories.highPriority.reduce((sum, d) => sum + d.minimumPayment, 0);
+  
+  const totalMinimums = lowMinimums + mediumMinimums + highMinimums;
+  const extraBudget = Math.max(0, totalBudget - totalMinimums);
+  
+  console.log(`\n   💰 Budget Allocation:`);
+  console.log(`      Total Budget: $${totalBudget.toFixed(2)}`);
+  console.log(`      Total Minimums: $${totalMinimums.toFixed(2)}`);
+  console.log(`      - High Priority Mins: $${highMinimums.toFixed(2)}`);
+  console.log(`      - Medium Priority Mins: $${mediumMinimums.toFixed(2)}`);
+  console.log(`      - Low Priority Mins: $${lowMinimums.toFixed(2)}`);
+  console.log(`      Extra Available: $${extraBudget.toFixed(2)}`);
+  
+  // Smart allocation based on what types of debt we have
+  let highPercentage = 0.8;   // Default: 80% to high priority
+  let mediumPercentage = 0.2; // Default: 20% to medium
+  let lowPercentage = 0.0;    // Default: 0% to low (mortgage/large loans)
+  
+  // Adjust if we have medical debt (urgent)
+  const hasMedicalDebt = categories.highPriority.some(d => d.type === 'MEDICAL_DEBT');
+  if (hasMedicalDebt) {
+    highPercentage = 0.9;  // 90% to high if medical debt exists
+    mediumPercentage = 0.1;
+  }
+  
+  // Adjust if we only have medium priority debts
+  if (categories.highPriority.length === 0 && categories.mediumPriority.length > 0) {
+    highPercentage = 0.0;
+    mediumPercentage = 1.0;
+  }
+  
+  // If student loans are the only medium priority, maybe allocate a bit more
+  const hasOnlyStudentLoans = categories.mediumPriority.every(d => d.type === 'STUDENT_LOAN');
+  if (hasOnlyStudentLoans && categories.mediumPriority.length > 0) {
+    mediumPercentage = Math.min(0.3, mediumPercentage + 0.1);
+    highPercentage = 1.0 - mediumPercentage;
+  }
+  
+  console.log(`      Allocation Strategy: ${(highPercentage*100).toFixed(0)}% High / ${(mediumPercentage*100).toFixed(0)}% Medium / ${(lowPercentage*100).toFixed(0)}% Low`);
+  
+  return {
+    highBudget: highMinimums + (extraBudget * highPercentage),
+    mediumBudget: mediumMinimums + (extraBudget * mediumPercentage),
+    lowBudget: lowMinimums + (extraBudget * lowPercentage)
+  };
+};
+
+
+const calculateMortgagePayoff = (
+  mortgage: DebtResponse,
+  monthlyPayment: number,
+  startingMonth: number = 0
+): { months: number; totalInterest: number; timeline: any[] } => {
+  let balance = mortgage.currentAmount;
+  const monthlyRate = mortgage.interestRate / 12;
+  let totalInterest = 0;
+  const timeline = [];
+  let month = startingMonth;
+  
+  while (balance > 0.01 && month < 600) { // Max 50 years
+    month++;
+    const interestCharge = balance * monthlyRate;
+    const principal = Math.min(monthlyPayment - interestCharge, balance);
+    
+    if (principal <= 0) {
+      console.log('⚠️ Payment doesn\'t cover interest! Need higher payment.');
+      break;
+    }
+    
+    balance = Math.max(0, balance - principal);
+    totalInterest += interestCharge;
+    
+    // Log key milestones
+    if (month % 60 === 0 || balance === 0) {
+      timeline.push({
+        month,
+        balance: roundAmount(balance),
+        principal: roundAmount(principal),
+        interest: roundAmount(interestCharge),
+        totalInterest: roundAmount(totalInterest)
+      });
+    }
+  }
+  
+  return { 
+    months: month - startingMonth, 
+    totalInterest: roundAmount(totalInterest),
+    timeline 
+  };
+};
+
+
+const calculateCompleteDebtPlan = (
+  categorized: CategorizedDebts,
+  phase1Result: any,
+  availableBudget: number
+): CompleteDebtPlan => {
+  console.log('\n🏡 =============== COMPLETE DEBT ELIMINATION PLAN ===============');
+  
+  // PHASE 1: High/Medium priority debts
+  const phase1Months = phase1Result?.projection?.totalMonths || 0;
+  const phase1Interest = phase1Result?.projection?.totalInterestPaid || 0;
+  const highPriorityPayments = categorized.highPriority.reduce((sum, d) => sum + d.minimumPayment, 0);
+  const mediumPriorityPayments = categorized.mediumPriority.reduce((sum, d) => sum + d.minimumPayment, 0);
+  const freedBudgetAfterPhase1 = highPriorityPayments + mediumPriorityPayments;
+  
+  console.log('\n📊 PHASE 1: Credit Cards & High-Priority Debts');
+  console.log(`   Duration: ${phase1Months} months`);
+  console.log(`   Debts: ${[...categorized.highPriority, ...categorized.mediumPriority].map(d => d.name).join(', ')}`);
+  console.log(`   Total Interest: $${phase1Interest.toFixed(2)}`);
+  console.log(`   Budget Freed After Phase 1: $${freedBudgetAfterPhase1.toFixed(2)}/month`);
+  
+  // PHASE 2: Mortgage/Low priority with freed budget
+  let phase2Months = 0;
+  let phase2Interest = 0;
+  let mortgageStrategy = 'Minimum payments only';
+  let interestSaved = 0;
+  
+  if (categorized.lowPriority.length > 0) {
+    const mortgage = categorized.lowPriority[0]; // Assuming one mortgage
+    
+    // Calculate mortgage payoff with MINIMUM payments only
+    const minimumOnlyPayoff = calculateMortgagePayoff(mortgage, mortgage.minimumPayment);
+    
+    // Calculate ACCELERATED payoff after Phase 1
+    const acceleratedPayment = mortgage.minimumPayment + freedBudgetAfterPhase1;
+    const acceleratedPayoff = calculateMortgagePayoff(mortgage, acceleratedPayment, phase1Months);
+    
+    // Calculate mortgage interest DURING Phase 1 (minimum payments)
+    const phase1MortgageInterest = phase1Months * mortgage.currentAmount * (mortgage.interestRate / 12);
+    
+    phase2Months = acceleratedPayoff.months;
+    phase2Interest = acceleratedPayoff.totalInterest + phase1MortgageInterest;
+    interestSaved = (minimumOnlyPayoff.totalInterest - phase2Interest);
+    
+    console.log('\n🏠 PHASE 2: Mortgage Acceleration');
+    console.log(`   Starting Month: ${phase1Months + 1}`);
+    console.log(`   Mortgage Balance at Start: $${(mortgage.currentAmount - (phase1Months * 1000)).toFixed(2)} (estimate)`);
+    console.log(`   Accelerated Payment: $${acceleratedPayment.toFixed(2)}/month`);
+    console.log(`   - Previous Minimum: $${mortgage.minimumPayment.toFixed(2)}`);
+    console.log(`   - Added from freed budget: $${freedBudgetAfterPhase1.toFixed(2)}`);
+    console.log(`   Duration: ${phase2Months} months`);
+    console.log(`   Total Mortgage Interest: $${phase2Interest.toFixed(2)}`);
+    
+    console.log('\n💰 MORTGAGE COMPARISON:');
+    console.log(`   Minimum Payments Only: ${minimumOnlyPayoff.months} months, $${minimumOnlyPayoff.totalInterest.toFixed(2)} interest`);
+    console.log(`   With Acceleration: ${phase1Months + phase2Months} months total`);
+    console.log(`   Time Saved: ${minimumOnlyPayoff.months - (phase1Months + phase2Months)} months`);
+    console.log(`   Interest Saved: $${interestSaved.toFixed(2)}`);
+    
+    mortgageStrategy = `Accelerated after month ${phase1Months}`;
+    
+    // Show mortgage milestones
+    if (acceleratedPayoff.timeline.length > 0) {
+      console.log('\n📍 MORTGAGE MILESTONES:');
+      acceleratedPayoff.timeline.forEach(milestone => {
+        const percentPaid = ((mortgage.currentAmount - milestone.balance) / mortgage.currentAmount * 100).toFixed(1);
+        console.log(`   Month ${milestone.month}: Balance $${milestone.balance.toFixed(2)} (${percentPaid}% paid off)`);
+      });
+    }
+  }
+  
+  const totalMonths = phase1Months + phase2Months;
+  const totalInterest = phase1Interest + phase2Interest;
+  
+  console.log('\n🎯 =============== COMPLETE TIMELINE SUMMARY ===============');
+  console.log(`   📅 TOTAL TIME TO DEBT FREEDOM: ${totalMonths} months (${(totalMonths/12).toFixed(1)} years)`);
+  console.log(`   💰 TOTAL INTEREST PAID: $${totalInterest.toFixed(2)}`);
+  console.log(`   📊 BREAKDOWN:`);
+  console.log(`      Phase 1 (Credit Cards): ${phase1Months} months`);
+  console.log(`      Phase 2 (Mortgage): ${phase2Months} months`);
+  console.log(`   🚀 STRATEGY: Avalanche → Mortgage Acceleration`);
+  
+  // Calculate milestone dates
+  const today = new Date();
+  const creditCardsFreeDate = new Date(today);
+  creditCardsFreeDate.setMonth(creditCardsFreeDate.getMonth() + phase1Months);
+  const completelyDebtFreeDate = new Date(today);
+  completelyDebtFreeDate.setMonth(completelyDebtFreeDate.getMonth() + totalMonths);
+  
+  console.log(`\n📅 KEY DATES:`);
+  console.log(`   Credit Cards Paid Off: ${creditCardsFreeDate.toLocaleDateString('en-US', { month: 'long', year: 'numeric' })}`);
+  console.log(`   Completely Debt Free: ${completelyDebtFreeDate.toLocaleDateString('en-US', { month: 'long', year: 'numeric' })}`);
+  
+  return {
+    phase1: {
+      months: phase1Months,
+      debts: [...categorized.highPriority, ...categorized.mediumPriority].map(d => d.name),
+      freedBudget: freedBudgetAfterPhase1,
+      totalInterest: phase1Interest
+    },
+    phase2: {
+      months: phase2Months,
+      debts: categorized.lowPriority.map(d => d.name),
+      acceleratedPayment: categorized.lowPriority[0]?.minimumPayment + freedBudgetAfterPhase1 || 0,
+      interestSaved,
+      totalInterest: phase2Interest
+    },
+    totalMonths,
+    totalInterest,
+    mortgageStrategy
+  };
+};
+
+// Optional: Performance optimization for large debts
+const shouldOptimizeDebt = (debt: DebtResponse): boolean => {
+  // Don't optimize mortgages
+  if (debt.type === 'MORTGAGE') return false;
+  
+  // Don't optimize very large auto loans
+  if (debt.type === 'AUTO_LOAN' && debt.currentAmount > 50000) return false;
+  
+  // Don't optimize low-rate student loans over $50k
+  if (debt.type === 'STUDENT_LOAN' && debt.currentAmount > 50000 && debt.interestRate < 0.05) return false;
+  
+  // Optimize everything else
+  return true;
+};
+
+
 
 // Enhanced Backward DP with 3-Month Lookahead
 const optimizeWithBackwardDP = (debts: DebtResponse[], availableBudget: number) => {
   console.log('\n⏮️ ENHANCED A* DYNAMIC PROGRAMMING WITH 3-MONTH LOOKAHEAD:');
   
-  const lookaheadDepth = 3; // 🔥 NEW: 3-month lookahead
+  const lookaheadDepth = 3; // 
   
   // IMPROVED discretization - adaptive based on balance size
   const discretizeBalance = (balance: number): number => {
@@ -268,7 +564,7 @@ const optimizeWithBackwardDP = (debts: DebtResponse[], availableBudget: number) 
     // 🔥 NEW: Only evaluate top 3 strategies with lookahead
 const evaluatedStrategies = strategies
   .sort((a, b) => (b.priority || 0) - (a.priority || 0))
-  .slice(0, 3)  // Take top 3 by priority first
+  .slice(0, 3)  // Take top 4 by priority first
   .map(strategy => {
     const lookaheadResult = evaluateStrategyWithLookahead(balances, strategy);
     return {
@@ -380,8 +676,8 @@ return [...evaluatedStrategies, ...remainingStrategies]
     gScores.set(startKey, 0);
     
     let iterations = 0;
-    const MAX_ITERATIONS = 80000; // 🔥 KEEP HIGH: Thorough search
-    const MAX_MONTHS = 100; // 🔥 KEEP DEEP: Complete debt elimination
+    const MAX_ITERATIONS = 8000000; // 🔥 KEEP HIGH: Thorough search
+    const MAX_MONTHS = 370; // 🔥 KEEP DEEP: Complete debt elimination
     let bestSolutionFound: any = null;
     
     console.log(`🔍 A* Deep Search with 3-Month Lookahead: [${initialBalances.map(b => `$${b}`).join(', ')}]`);
@@ -666,7 +962,7 @@ const showCompleteStrategy = (dpResult: any) => {
   }
 };
 
-export const calculateOptimalStrategy = async (userId: string): Promise<OptimizationResult> => {
+export const calculateOptimalStrategy = async (userId: string): Promise<any> => {
   try {
     console.log('\n🚀 =============== DEBT OPTIMIZATION START ===============');
     
@@ -704,56 +1000,159 @@ export const calculateOptimalStrategy = async (userId: string): Promise<Optimiza
 
     const availableBudget = Number(financialProfile.monthly_income) - Number(financialProfile.monthly_expenses);
 
-    console.log(`💼 Portfolio: ${debts.length} debts, $${debtResponses.reduce((sum, d) => sum + d.currentAmount, 0).toFixed(2)} total`);
-
-    // Check feasibility
-    const totalMinimums = debtResponses.reduce((sum, debt) => sum + debt.minimumPayment, 0);
-    if (availableBudget < totalMinimums) {
-      throw new Error(`Insufficient budget: Need $${totalMinimums}, have $${availableBudget}`);
+      // ============ NEW CATEGORIZATION LOGIC ============
+    console.log('\n📊 DEBT CATEGORIZATION:');
+    const categorized = categorizeDebts(debtResponses);
+    const budgetAllocation = allocateBudgetByPriority(categorized, availableBudget);
+    
+    // Check if we have high-priority debts to optimize
+    if (categorized.highPriority.length === 0 && categorized.mediumPriority.length === 0) {
+      console.log('⚠️ No optimizable debts (only mortgage/large debts). Paying minimums only.');
+      
+      // Just return minimum payments for all debts
+      const plannedPayments = debtResponses.map(debt => ({
+        debtId: debt.id,
+        debtName: debt.name,
+        amount: debt.minimumPayment,
+        minimumPayment: debt.minimumPayment,
+        extraAmount: 0
+      }));
+      
+      return {
+        isOptimal: true,
+        totalInterestSaved: 0,
+        projectedMonths: 999, // Large debts take forever with minimums
+        plannedPayments,
+        monthlyProjection: []
+      };
     }
     
-    // 🔥 RUN DP OPTIMIZATION WITH 3-MONTH LOOKAHEAD
-    const dpResult = optimizeWithBackwardDP(debtResponses, availableBudget);
+    // ============ RUN OPTIMIZATION ONLY ON HIGH/MEDIUM PRIORITY ============
+    let optimizationResults: any = null;
+    const allPlannedPayments: any[] = [];
     
-    // Show complete DP strategy analysis
-    showCompleteStrategy(dpResult);
-    
-    console.log('\n🏁 =============== OPTIMIZATION COMPLETE ===============');
-    
-    // Transform DP results to controller format
-    const plannedPayments = debtResponses.map((debt, index) => ({
-      debtId: debt.id,
-      debtName: debt.name,
-      amount: dpResult.payments[index] || debt.minimumPayment,
-      minimumPayment: debt.minimumPayment,
-      extraAmount: Math.max(0, (dpResult.payments[index] || debt.minimumPayment) - debt.minimumPayment)
-    }));
-    
-    const calculateSimpleInterestSavings = () => {
-      const totalDebt = debtResponses.reduce((sum, debt) => sum + debt.currentAmount, 0);
-      const weightedAvgInterestRate = debtResponses.reduce((sum, debt) => 
-        sum + (debt.interestRate * debt.currentAmount), 0) / totalDebt;
+    // 1. Optimize high-priority debts if any
+    if (categorized.highPriority.length > 0) {
+      console.log(`\n🔥 OPTIMIZING ${categorized.highPriority.length} HIGH-PRIORITY DEBTS with $${budgetAllocation.highBudget} budget`);
       
-      // Estimate savings: DP eliminates debt faster = less total interest
-      const dpMonths = dpResult.projection?.totalMonths || 24;
+      const highPriorityResult = optimizeWithBackwardDP(
+        categorized.highPriority, 
+        budgetAllocation.highBudget
+      );
+      
+      // Add high priority payments
+      categorized.highPriority.forEach((debt, index) => {
+        allPlannedPayments.push({
+          debtId: debt.id,
+          debtName: debt.name,
+          amount: highPriorityResult.payments[index] || debt.minimumPayment,
+          minimumPayment: debt.minimumPayment,
+          extraAmount: Math.max(0, (highPriorityResult.payments[index] || debt.minimumPayment) - debt.minimumPayment),
+          priority: 'HIGH'
+        });
+      });
+      
+      optimizationResults = highPriorityResult;
+    }
+    
+    // 2. Handle medium-priority debts
+    if (categorized.mediumPriority.length > 0) {
+      console.log(`\n⚖️ OPTIMIZING ${categorized.mediumPriority.length} MEDIUM-PRIORITY DEBTS with $${budgetAllocation.mediumBudget} budget`);
+      
+      const mediumPriorityResult = optimizeWithBackwardDP(
+        categorized.mediumPriority,
+        budgetAllocation.mediumBudget
+      );
+      
+      categorized.mediumPriority.forEach((debt, index) => {
+        allPlannedPayments.push({
+          debtId: debt.id,
+          debtName: debt.name,
+          amount: mediumPriorityResult.payments[index] || debt.minimumPayment,
+          minimumPayment: debt.minimumPayment,
+          extraAmount: Math.max(0, (mediumPriorityResult.payments[index] || debt.minimumPayment) - debt.minimumPayment),
+          priority: 'MEDIUM'
+        });
+      });
+    }
+    
+    // 3. Low-priority debts get ONLY minimum payments
+    categorized.lowPriority.forEach(debt => {
+      allPlannedPayments.push({
+        debtId: debt.id,
+        debtName: debt.name + ' (Minimum Only)',
+        amount: debt.minimumPayment,
+        minimumPayment: debt.minimumPayment,
+        extraAmount: 0,
+        priority: 'LOW'
+      });
+    });
+    
+    // ============ CALCULATE TOTAL INTEREST SAVED ============
+    const calculateCategorizedInterestSavings = () => {
+      // Only calculate savings for optimized debts
+      const optimizedDebts = [...categorized.highPriority, ...categorized.mediumPriority];
+      if (optimizedDebts.length === 0) return 0;
+      
+      const totalOptimizedDebt = optimizedDebts.reduce((sum, debt) => sum + debt.currentAmount, 0);
+      const weightedAvgInterestRate = optimizedDebts.reduce((sum, debt) => 
+        sum + (debt.interestRate * debt.currentAmount), 0) / totalOptimizedDebt;
+      
+      const dpMonths = optimizationResults?.projection?.totalMonths || 24;
       const estimatedMinimumMonths = Math.max(dpMonths * 1.5, dpMonths + 12);
       
-      const dpInterest = dpResult.projection?.totalInterestPaid || 0;
-      const estimatedMinimumInterest = totalDebt * weightedAvgInterestRate * (estimatedMinimumMonths / 12) * 0.6;
+      const dpInterest = optimizationResults?.projection?.totalInterestPaid || 0;
+      const estimatedMinimumInterest = totalOptimizedDebt * weightedAvgInterestRate * (estimatedMinimumMonths / 12) * 0.6;
       
       return Math.max(0, estimatedMinimumInterest - dpInterest);
     };
 
-    const totalInterestSaved = calculateSimpleInterestSavings();
+    const totalInterestSaved = calculateCategorizedInterestSavings();
+    
+    // Show complete strategy
+    if (optimizationResults) {
+      showCompleteStrategy(optimizationResults);
+    }
+    
+    console.log('\n📊 FINAL PAYMENT PLAN:');
+    allPlannedPayments.forEach(payment => {
+      console.log(`   ${payment.priority} - ${payment.debtName}: $${payment.amount} (Min: $${payment.minimumPayment}, Extra: $${payment.extraAmount})`);
+    });
+    
+    console.log('\n🏁 =============== OPTIMIZATION COMPLETE ===============');
 
-    // Return DP results only
-    return {
-      isOptimal: true,
-      totalInterestSaved: roundAmount(totalInterestSaved),
-      projectedMonths: dpResult.projection?.totalMonths || 0,
-      plannedPayments: plannedPayments,
-      monthlyProjection: dpResult.projection?.projection?.slice(0, 36) || []
-    };
+    const completeDebtPlan = calculateCompleteDebtPlan(
+  categorized,
+  optimizationResults,
+  availableBudget
+);
+    
+   // Enhanced return with complete timeline
+return {
+  isOptimal: true,
+  totalInterestSaved: roundAmount(totalInterestSaved),
+  projectedMonths: completeDebtPlan.totalMonths, // CHANGED: Use total months including mortgage
+  plannedPayments: allPlannedPayments,
+  monthlyProjection: optimizationResults?.projection?.projection?.slice(0, 36) || [],
+  
+  // NEW: Add complete debt elimination info
+  completeDebtPlan: {
+    phase1: {
+      months: completeDebtPlan.phase1.months,
+      description: 'High-priority debt elimination',
+      freedBudget: completeDebtPlan.phase1.freedBudget
+    },
+    phase2: {
+      months: completeDebtPlan.phase2.months,
+      description: 'Mortgage acceleration with freed budget',
+      monthlyPayment: completeDebtPlan.phase2.acceleratedPayment,
+      interestSaved: completeDebtPlan.phase2.interestSaved
+    },
+    totalTimeline: `${completeDebtPlan.totalMonths} months (${(completeDebtPlan.totalMonths/12).toFixed(1)} years)`,
+    totalInterest: completeDebtPlan.totalInterest,
+    strategy: completeDebtPlan.mortgageStrategy
+  }
+};
 
   } catch (error) {
     console.error('❌ Optimization failed:', error);
