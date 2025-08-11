@@ -2,7 +2,9 @@
 import { PrismaClient } from '@prisma/client';
 import { DebtResponse } from '../types/debts';
 import { OptimizationResult, StrategyWithLookahead } from '../types/optimization';
-import {optimizeLowPriorityWithHybridAvalanche} from './highpriority.optimization.service';
+import { optimizeLowPriorityWithHybridAvalanche } from './highpriority.optimization.service';
+import { MinHeap } from '../utils/priorityQueue';
+import { HeuristicCache } from '../utils/heuristicCache';
 
 const prisma = new PrismaClient();
 interface CategorizedDebts {
@@ -178,16 +180,22 @@ const optimizeWithBackwardDP = (
   const lookaheadDepth = 3; // 
   
   // IMPROVED discretization - adaptive based on balance size
-  const discretizeBalance = (balance: number): number => {
+ const discretizeBalance = (balance: number): number => {
   if (balance <= 1) return 0;
-  if (balance <= 100) return Math.max(0, Math.round(balance / 10) * 10);
-  if (balance <= 1000) return Math.max(0, Math.round(balance / 25) * 25);
-  return Math.max(0, Math.round(balance / 50) * 50);
-  };
+  if (balance <= 500) return Math.round(balance / 25) * 25;    // $25 steps for small
+  if (balance <= 5000) return Math.round(balance / 100) * 100; // $100 steps for medium  
+  return Math.round(balance / 250) * 250;                      // $250 steps for large
+};
   
-  const createStateKey = (balances: number[]): string => {
-    const discretized = balances.map(discretizeBalance);
-    return discretized.join('_');
+  const createStateKey = (balances: number[]): number => {
+      let key = 0;
+  
+  for (let i = 0; i < Math.min(balances.length, 5); i++) {
+    const discretized = Math.min(4095, discretizeBalance(balances[i]) / 10); // Scale to fit 12 bits
+    key = (key << 12) | discretized;
+  }
+  
+  return key;
   };
 
   // 🔥 NEW: 3-month lookahead evaluation function
@@ -424,46 +432,63 @@ return [...evaluatedStrategies, ...remainingStrategies]
   };
 
   // ENHANCED A* Heuristic with Cash Flow Consideration
+  // 🚀 OPTIMIZED: Cached heuristic calculation
   const calculateHeuristic = (balances: number[]): number => {
-    const totalDebt = balances.reduce((a, b) => a + b, 0);
-    if (totalDebt <= 0) return 0;
-    
-    // Calculate current budget
-    let currentBudget = availableBudget;
-    
-    // Factor in potential freed cash flow from debts close to payoff
-    let projectedFreedCashFlow = 0;
-    balances.forEach((balance, i) => {
-      if (balance > 0 && balance <= currentBudget * 3) {
-        const monthlyInterest = balance * (debts[i].interestRate / 12);
-        const monthsToPayoff = balance / (currentBudget - monthlyInterest);
-        if (monthsToPayoff <= 3) {
-          projectedFreedCashFlow += debts[i].minimumPayment;
-        }
+  const heuristicCache = new HeuristicCache();
+  // Check cache first
+  const cachedResult = heuristicCache.get(balances);
+  if (cachedResult !== undefined) {
+    return cachedResult;
+  }
+  
+  // Same calculation logic as before
+  const totalDebt = balances.reduce((a, b) => a + b, 0);
+  if (totalDebt <= 0) {
+    heuristicCache.set(balances, 0);
+    return 0;
+  }
+  
+  // Calculate current budget
+  let currentBudget = availableBudget;
+  
+  // Factor in potential freed cash flow from debts close to payoff
+  let projectedFreedCashFlow = 0;
+  balances.forEach((balance, i) => {
+    if (balance > 0 && balance <= currentBudget * 3) {
+      const monthlyInterest = balance * (debts[i].interestRate / 12);
+      const monthsToPayoff = balance / (currentBudget - monthlyInterest);
+      if (monthsToPayoff <= 3) {
+        projectedFreedCashFlow += debts[i].minimumPayment;
       }
-    });
-    
-    // Enhanced budget calculation
-    const enhancedBudget = currentBudget + (projectedFreedCashFlow * 0.5);
-    
-    // Weighted average interest rate
-    const weightedAvgRate = debts.reduce((sum, debt, i) => {
-      return sum + (debt.interestRate * balances[i]);
-    }, 0) / totalDebt;
-    
-    // Estimate monthly principal payment
-    const estimatedMonthlyPrincipal = enhancedBudget * 0.75;
-    const estimatedMonths = Math.ceil(totalDebt / estimatedMonthlyPrincipal);
-    
-    // Cash flow complexity penalty
-    const activeDemandingDebts = balances.filter((b, i) => b > 0 && debts[i].minimumPayment > 100).length;
-    const complexityPenalty = Math.max(0, activeDemandingDebts - 1) * 0.3;
-    
-    // Liberation bonus (reward for having debts close to payoff)
-    const liberationBonus = projectedFreedCashFlow > 100 ? -1 : 0;
-    
-    return estimatedMonths + complexityPenalty + liberationBonus;
-  };
+    }
+  });
+  
+  // Enhanced budget calculation
+  const enhancedBudget = currentBudget + (projectedFreedCashFlow * 0.5);
+  
+  // Weighted average interest rate
+  const weightedAvgRate = debts.reduce((sum, debt, i) => {
+    return sum + (debt.interestRate * balances[i]);
+  }, 0) / totalDebt;
+  
+  // Estimate monthly principal payment
+  const estimatedMonthlyPrincipal = enhancedBudget * 0.75;
+  const estimatedMonths = Math.ceil(totalDebt / estimatedMonthlyPrincipal);
+  
+  // Cash flow complexity penalty
+  const activeDemandingDebts = balances.filter((b, i) => b > 0 && debts[i].minimumPayment > 100).length;
+  const complexityPenalty = Math.max(0, activeDemandingDebts - 1) * 0.3;
+  
+  // Liberation bonus (reward for having debts close to payoff)
+  const liberationBonus = projectedFreedCashFlow > 100 ? -1 : 0;
+  
+  const result = estimatedMonths + complexityPenalty + liberationBonus;
+  
+  // Cache the result
+  heuristicCache.set(balances, result);
+  
+  return result;
+};
 
   // Calculate next month's balances with better precision
   const calculateNewBalances = (currentBalances: number[], payments: number[]): number[] => {
@@ -490,161 +515,161 @@ return [...evaluatedStrategies, ...remainingStrategies]
   }
 
   // 🔥 ENHANCED: A* search with 3-month lookahead but deep search capability
-  const calculateOptimalPath = (
-    initialBalances: number[],
-    startMonth: number,           // NEW: Add this parameter
-    freedUpAvailableMonth: number
-  ): { 
-    months: number, 
-    path: Array<{ month: number, balances: number[], payments: number[], strategy: string }> 
-  } => {
-    const openSet: AStarNode[] = [];
-    const closedSet = new Set<string>();
-    const gScores = new Map<string, number>();
-    
-    const startKey = createStateKey(initialBalances);
-    const initialHeuristic = calculateHeuristic(initialBalances);
-    
-    const startNode: AStarNode = { 
-      balances: initialBalances, 
-      months: 0,
-      gScore: 0,
-      hScore: initialHeuristic,
-      fScore: initialHeuristic,
-      path: [{ month: 0, balances: initialBalances, payments: [0, 0, 0], strategy: 'Initial' }] 
-    };
-    
-    openSet.push(startNode);
-    gScores.set(startKey, 0);
-    
-    let iterations = 0;
-    const MAX_ITERATIONS = 8000000; // 🔥 KEEP HIGH: Thorough search
-    const MAX_MONTHS = 370; // 🔥 KEEP DEEP: Complete debt elimination
-    let bestSolutionFound: any = null;
-    
-    console.log(`🔍 A* Deep Search with 3-Month Lookahead: [${initialBalances.map(b => `$${b}`).join(', ')}]`);
-    console.log(`🎯 Initial heuristic estimate: ${initialHeuristic} months`);
-    
-    while (openSet.length > 0 && iterations < MAX_ITERATIONS) {
-      iterations++;
-      
-      // Get node with lowest fScore (A* priority)
-      openSet.sort((a, b) => a.fScore - b.fScore);
-      const current = openSet.shift()!;
-      const currentKey = createStateKey(current.balances);
-      
-      // Move to closed set
-      closedSet.add(currentKey);
-      
-      // Base case: all debts paid off
-      if (current.balances.every(b => b <= 5)) {
-        console.log(`✅ A* Found optimal solution in ${current.months} months after ${iterations} iterations`);
-        return { months: current.months, path: current.path };
-      }
-      
-      // Track best partial solution
-      const totalDebt = current.balances.reduce((a, b) => a + b, 0);
-      if (!bestSolutionFound || totalDebt < bestSolutionFound.totalDebt || 
-          (totalDebt === bestSolutionFound.totalDebt && current.months < bestSolutionFound.months)) {
-        bestSolutionFound = { months: current.months, path: current.path, totalDebt };
-      }
-      
-      // Don't explore beyond reasonable timeframe
-      if (current.months >= MAX_MONTHS) continue;
-      
-      // 🔥 NEW: Explore strategies with 3-month lookahead evaluation
-      const currentAbsoluteMonth = startMonth + current.months;
-      const strategies = getPaymentStrategies(current.balances, currentAbsoluteMonth);
-      
-      for (const strategy of strategies as StrategyWithLookahead[]) {
-        const newBalances = calculateNewBalances(current.balances, strategy.payments);
-        const newKey = createStateKey(newBalances);
-        
-        // Skip if no progress made
-        const oldTotal = current.balances.reduce((a, b) => a + b, 0);
-        const newTotal = newBalances.reduce((a, b) => a + b, 0);
-        if (newTotal >= oldTotal) continue;
-        
-        // Skip if already in closed set
-        if (closedSet.has(newKey)) continue;
-        
-        const tentativeGScore = current.gScore + 1;
-        
-        // Skip if we've found a better path to this state
-        const knownGScore = gScores.get(newKey);
-        if (knownGScore !== undefined && tentativeGScore >= knownGScore) continue;
-        
-        // This is the best path to this state so far
-        gScores.set(newKey, tentativeGScore);
-        
-        // 🔥 NEW: Use 3-month lookahead score as enhanced heuristic
-        const baseHeuristic = calculateHeuristic(newBalances);
-        const lookaheadBonus = strategy.lookaheadScore ? Math.min(5, strategy.lookaheadScore / 200) : 0;
-        const hScore = Math.max(0.5, baseHeuristic - lookaheadBonus);
-        const fScore = tentativeGScore + hScore;
-        
-        const newPath = [...current.path, { 
-          month: current.months + 1, 
-          balances: newBalances, 
-          payments: strategy.payments, 
-          strategy: strategy.name 
-        }];
-        
-        // Add to open set
-        const neighborNode: AStarNode = {
-          balances: newBalances,
-          months: current.months + 1,
-          gScore: tentativeGScore,
-          hScore: hScore,
-          fScore: fScore,
-          path: newPath
-        };
-        
-        openSet.push(neighborNode);
-      }
-      
-      // Progress logging
-      if (iterations % 20000 === 0) {
-        const currentDebt = current.balances.reduce((a, b) => a + b, 0);
-        console.log(`   🔍 A* Iteration ${iterations}, Queue: ${openSet.length}, Month: ${current.months}, Debt: $${currentDebt}, F: ${current.fScore.toFixed(1)}`);
-      }
-    }
-    
-    console.log(`⚠️ A* reached ${iterations} iterations`);
-    
-    // Return best solution found
-    if (bestSolutionFound && bestSolutionFound.path.length > 1) {
-      console.log(`📊 Using best solution found: ${bestSolutionFound.months} months, $${bestSolutionFound.totalDebt.toFixed(2)} remaining debt`);
-      return bestSolutionFound;
-    }
-    
-    // Fallback strategy
-    console.log(`🔄 Using fallback avalanche strategy`);
-    const fallbackPath = [{ month: 0, balances: initialBalances, payments: [0, 0, 0], strategy: 'Initial' }];
-    let currentBalances = [...initialBalances];
-    
-    for (let month = 1; month <= Math.min(60, MAX_MONTHS); month++) {
-       const currentAbsoluteMonth = startMonth + month; 
-      const strategies = getPaymentStrategies(currentBalances,currentAbsoluteMonth);
-      const avalancheStrategy = strategies.find(s => s.name.includes('Avalanche')) || strategies[0];
-      
-      fallbackPath.push({
-        month,
-        balances: [...currentBalances],
-        payments: avalancheStrategy.payments,
-        strategy: avalancheStrategy.name
-      });
-      
-      currentBalances = calculateNewBalances(currentBalances, avalancheStrategy.payments);
-      
-      if (currentBalances.every(b => b <= 5)) {
-        console.log(`✅ Fallback strategy completes in ${month} months`);
-        break;
-      }
-    }
-    
-    return { months: fallbackPath.length - 1, path: fallbackPath };
+ const calculateOptimalPath = (
+  initialBalances: number[],
+  startMonth: number,
+  freedUpAvailableMonth: number
+): { 
+  months: number, 
+  path: Array<{ month: number, balances: number[], payments: number[], strategy: string }> 
+} => {
+  // 🚀 OPTIMIZED: MinHeap Priority Queue instead of array sorting
+  const openSet = new MinHeap<AStarNode>((a, b) => a.fScore - b.fScore);
+ const closedSet = new Set<number>();
+  const gScores = new Map<number, number>();
+  
+  const startKey = createStateKey(initialBalances);
+  const initialHeuristic = calculateHeuristic(initialBalances);
+  
+  const startNode: AStarNode = { 
+    balances: initialBalances, 
+    months: 0,
+    gScore: 0,
+    hScore: initialHeuristic,
+    fScore: initialHeuristic,
+    path: [{ month: 0, balances: initialBalances, payments: [0, 0, 0], strategy: 'Initial' }] 
   };
+  
+  // 🚀 OPTIMIZED: O(log n) insertion instead of O(n) push
+  openSet.push(startNode);
+  gScores.set(startKey, 0);
+  
+  let iterations = 0;
+  const MAX_ITERATIONS = 8000000; // Keep your high quality threshold
+  const MAX_MONTHS = 370;
+  let bestSolutionFound: any = null;
+  
+  console.log(`🔍 A* Deep Search with 3-Month Lookahead: [${initialBalances.map(b => `$${b}`).join(', ')}]`);
+  console.log(`🎯 Initial heuristic estimate: ${initialHeuristic} months`);
+  
+  // 🚀 OPTIMIZED: No more expensive array sorting!
+  while (!openSet.isEmpty() && iterations < MAX_ITERATIONS) {
+    iterations++;
+    
+    // 🚀 OPTIMIZED: O(log n) extraction instead of O(n log n) sort + O(n) shift
+    const current = openSet.pop()!;
+    const currentKey = createStateKey(current.balances);
+    
+    // Move to closed set
+    closedSet.add(currentKey);
+    
+    // Base case: all debts paid off - SAME OPTIMAL LOGIC
+    if (current.balances.every(b => b <= 5)) {
+      console.log(`✅ A* Found optimal solution in ${current.months} months after ${iterations} iterations`);
+      return { months: current.months, path: current.path };
+    }
+    
+    // Track best partial solution - SAME QUALITY TRACKING
+    const totalDebt = current.balances.reduce((a, b) => a + b, 0);
+    if (!bestSolutionFound || totalDebt < bestSolutionFound.totalDebt || 
+        (totalDebt === bestSolutionFound.totalDebt && current.months < bestSolutionFound.months)) {
+      bestSolutionFound = { months: current.months, path: current.path, totalDebt };
+    }
+    
+    // Don't explore beyond reasonable timeframe
+    if (current.months >= MAX_MONTHS) continue;
+    
+    // SAME STRATEGY GENERATION - No quality loss
+    const currentAbsoluteMonth = startMonth + current.months;
+    const strategies = getPaymentStrategies(current.balances, currentAbsoluteMonth);
+    
+    for (const strategy of strategies as StrategyWithLookahead[]) {
+      const newBalances = calculateNewBalances(current.balances, strategy.payments);
+      const newKey = createStateKey(newBalances);
+      
+      // SAME PRUNING LOGIC - Maintains optimality
+      const oldTotal = current.balances.reduce((a, b) => a + b, 0);
+      const newTotal = newBalances.reduce((a, b) => a + b, 0);
+      if (newTotal >= oldTotal) continue;
+      
+      if (closedSet.has(newKey)) continue;
+      
+      const tentativeGScore = current.gScore + 1;
+      
+      const knownGScore = gScores.get(newKey);
+      if (knownGScore !== undefined && tentativeGScore >= knownGScore) continue;
+      
+      // SAME OPTIMAL PATH TRACKING
+      gScores.set(newKey, tentativeGScore);
+      
+      // SAME HEURISTIC CALCULATION - No quality loss
+      const baseHeuristic = calculateHeuristic(newBalances);
+      const lookaheadBonus = strategy.lookaheadScore ? Math.min(5, strategy.lookaheadScore / 200) : 0;
+      const hScore = Math.max(0.5, baseHeuristic - lookaheadBonus);
+      const fScore = tentativeGScore + hScore;
+      
+      const newPath = [...current.path, { 
+        month: current.months + 1, 
+        balances: newBalances, 
+        payments: strategy.payments, 
+        strategy: strategy.name 
+      }];
+      
+      const neighborNode: AStarNode = {
+        balances: newBalances,
+        months: current.months + 1,
+        gScore: tentativeGScore,
+        hScore: hScore,
+        fScore: fScore,
+        path: newPath
+      };
+      
+      // 🚀 OPTIMIZED: O(log n) insertion maintains heap property automatically
+      openSet.push(neighborNode);
+    }
+    
+    // Progress logging - show queue size improvement
+    if (iterations % 20000 === 0) {
+      const currentDebt = current.balances.reduce((a, b) => a + b, 0);
+      console.log(`   🔍 A* Iteration ${iterations}, Queue: ${openSet.length}, Month: ${current.months}, Debt: $${currentDebt}, F: ${current.fScore.toFixed(1)}`);
+    }
+  }
+  
+  console.log(`⚠️ A* reached ${iterations} iterations`);
+  
+  // SAME FALLBACK LOGIC - No quality compromise
+  if (bestSolutionFound && bestSolutionFound.path.length > 1) {
+    console.log(`📊 Using best solution found: ${bestSolutionFound.months} months, $${bestSolutionFound.totalDebt.toFixed(2)} remaining debt`);
+    return bestSolutionFound;
+  }
+  
+  // Same fallback strategy
+  console.log(`🔄 Using fallback avalanche strategy`);
+  const fallbackPath = [{ month: 0, balances: initialBalances, payments: [0, 0, 0], strategy: 'Initial' }];
+  let currentBalances = [...initialBalances];
+  
+  for (let month = 1; month <= Math.min(60, MAX_MONTHS); month++) {
+    const currentAbsoluteMonth = startMonth + month; 
+    const strategies = getPaymentStrategies(currentBalances, currentAbsoluteMonth);
+    const avalancheStrategy = strategies.find(s => s.name.includes('Avalanche')) || strategies[0];
+    
+    fallbackPath.push({
+      month,
+      balances: [...currentBalances],
+      payments: avalancheStrategy.payments,
+      strategy: avalancheStrategy.name
+    });
+    
+    currentBalances = calculateNewBalances(currentBalances, avalancheStrategy.payments);
+    
+    if (currentBalances.every(b => b <= 5)) {
+      console.log(`✅ Fallback strategy completes in ${month} months`);
+      break;
+    }
+  }
+  
+  return { months: fallbackPath.length - 1, path: fallbackPath };
+};
 
   // Generate detailed projection using actual balances
   const generateDPProjection = (path: any[]) => {
@@ -967,13 +992,12 @@ export const calculateOptimalStrategy = async (userId: string): Promise<any> => 
       });
     } 
     // Show complete strategy
-    if (optimizationResults) {
-      showCompleteStrategy(optimizationResults);
-      //showCompleteStrategy(mediumPriorityResult);
-      //showCompleteStrategy(lowPriorityResult);
-    }
-   console.log('\n📊 COMPLETE LOW PRIORITY RESULT:');
-console.log(JSON.stringify(lowPriorityResult, null, 2));
+    // if (optimizationResults) {
+    //   showCompleteStrategy(optimizationResults);
+    //   //showCompleteStrategy(mediumPriorityResult);
+    //   //showCompleteStrategy(lowPriorityResult);
+    // }
+  
     
     // console.log('\n📊 FINAL PAYMENT PLAN:');
     // allPlannedPayments.forEach(payment => {

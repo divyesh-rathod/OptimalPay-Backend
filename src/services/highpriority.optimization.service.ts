@@ -28,8 +28,8 @@ export const optimizeLowPriorityWithHybridAvalanche = (
   freedUpBudget: number,
   freedUpAvailableMonth: number
 ) => {
-  console.log(`\n🏠 LOW PRIORITY HYBRID AVALANCHE (Start Month: ${startMonth})`);
-  console.log(`   💰 Minimum Budget: $${minimumBudget}, Freed Budget: $${freedUpBudget} (available month ${freedUpAvailableMonth})`);
+//   console.log(`\n🏠 LOW PRIORITY HYBRID AVALANCHE (Start Month: ${startMonth})`);
+//   console.log(`   💰 Minimum Budget: $${minimumBudget}, Freed Budget: $${freedUpBudget} (available month ${freedUpAvailableMonth})`);
   
   if (lowPriorityDebts.length === 0) {
     return {
@@ -49,51 +49,73 @@ export const optimizeLowPriorityWithHybridAvalanche = (
   let month = 0;
   const MAX_MONTHS = 500;
   
-  // ✅ FIX: Track budget increases for NEXT month
+  // ✅ Track budget increases for NEXT month
   let nextMonthBudgetIncrease = 0;
 
   while (currentBalances.some(balance => balance > 1) && month < MAX_MONTHS) {
     month++;
     const currentAbsoluteMonth = startMonth + month;
     
-    // ✅ FIX: Apply budget increases from previous month's debt payoffs
+    // ✅ Apply budget increases from previous month's debt payoffs
     currentBudget += nextMonthBudgetIncrease;
-    nextMonthBudgetIncrease = 0; // Reset for this month
+    nextMonthBudgetIncrease = 0;
     
-    // Update budget when external freed budget becomes available
-    if (currentAbsoluteMonth >= freedUpAvailableMonth) {
-      currentBudget = Math.max(currentBudget, minimumBudget + freedUpBudget);
-    }
-    
-    // Find target debt: highest monthly interest
-    const targetIndex = selectTargetByMonthlyInterest(currentBalances, lowPriorityDebts);
-    
-    // Calculate minimum payments for active debts only
+    // ✅ PERFECT PRECISION: Calculate minimum payments for active debts
     const minimumTotal = lowPriorityDebts
       .map((debt, i) => currentBalances[i] > 1 ? debt.minimumPayment : 0)
       .reduce((sum, payment) => sum + payment, 0);
-    
-    // Calculate available extra budget
-    const extraBudget = Math.max(0, currentBudget - minimumTotal);
-    
-    // Start with minimum payments
-    const monthlyPayments = lowPriorityDebts.map((debt, i) => 
-      currentBalances[i] > 1 ? debt.minimumPayment : 0
-    );
-    
-    // ✅ FIX: Distribute extra budget to target debt (allow full payoff)
-    if (extraBudget > 0 && currentBalances[targetIndex] > 1) {
-      const interest = currentBalances[targetIndex] * (lowPriorityDebts[targetIndex].interestRate / 12);
-      const totalNeededForPayoff = currentBalances[targetIndex] + interest;
-      const maxUsefulExtra = Math.max(0, totalNeededForPayoff - monthlyPayments[targetIndex]);
+
+    // ✅ PERFECT PRECISION: Determine exact budget and strategy based on timing
+    let extraBudget = 0;
+    let effectiveBudget = minimumTotal;
+    let targetIndex = 0;
+    let monthlyPayments: number[];
+    let strategyName: string;
+
+    if (currentAbsoluteMonth > freedUpAvailableMonth) {
+      // ✅ HIGH-PRIORITY DEBTS COMPLETED: Use full optimization
+      currentBudget = Math.max(currentBudget, minimumBudget + freedUpBudget);
+      effectiveBudget = currentBudget;
+      extraBudget = Math.max(0, currentBudget - minimumTotal);
       
-      const extraToApply = Math.min(extraBudget, maxUsefulExtra);
-      monthlyPayments[targetIndex] += extraToApply;
+      // Find target debt for optimization
+      targetIndex = selectTargetByMonthlyInterest(currentBalances, lowPriorityDebts);
       
-      console.log(`   🎯 Month ${currentAbsoluteMonth}: Target ${lowPriorityDebts[targetIndex].name}, Extra: $${extraToApply}`);
+      // Start with minimum payments
+      monthlyPayments = lowPriorityDebts.map((debt, i) => 
+        currentBalances[i] > 1 ? debt.minimumPayment : 0
+      );
+      
+      // Add extra budget to target debt
+      if (extraBudget > 0 && currentBalances[targetIndex] > 1) {
+        const interest = currentBalances[targetIndex] * (lowPriorityDebts[targetIndex].interestRate / 12);
+        const totalNeededForPayoff = currentBalances[targetIndex] + interest;
+        const maxUsefulExtra = Math.max(0, totalNeededForPayoff - monthlyPayments[targetIndex]);
+        
+        const extraToApply = Math.min(extraBudget, maxUsefulExtra);
+        monthlyPayments[targetIndex] += extraToApply;
+        
+        // console.log(`   🎯 Month ${currentAbsoluteMonth}: HIGH-PRIORITY COMPLETE! Target ${lowPriorityDebts[targetIndex].name}, Extra: $${extraToApply}`);
+      }
+      
+      strategyName = 'Hybrid Avalanche (Monthly Interest Priority)';
+      
+    } else {
+      // ✅ HIGH-PRIORITY DEBTS STILL RUNNING: MINIMUMS ONLY
+      effectiveBudget = minimumTotal;
+      extraBudget = 0;
+      
+      // Use ONLY minimum payments - no optimization yet
+      monthlyPayments = lowPriorityDebts.map((debt, i) => 
+        currentBalances[i] > 1 ? debt.minimumPayment : 0
+      );
+      
+      strategyName = 'Minimum Payments Only (Waiting for High-Priority Completion)';
+      
+    //   console.log(`   ⏳ Month ${currentAbsoluteMonth}: HIGH-PRIORITY STILL RUNNING (completes month ${freedUpAvailableMonth}). Using minimums only: $${minimumTotal.toFixed(2)}`);
     }
 
-    // Process payments and update balances
+    // ✅ Process payments and update balances
     let monthlyInterest = 0;
     const monthlyPaymentDetails: MonthlyPaymentDetail[] = [];
     
@@ -112,7 +134,7 @@ export const optimizeLowPriorityWithHybridAvalanche = (
       const payment = monthlyPayments[i];
       const interest = balance * (lowPriorityDebts[i].interestRate / 12);
       
-      // ✅ FIX: Proper principal calculation
+      // ✅ Proper principal calculation
       let principal, newBalance;
       if (payment >= balance + interest) {
         // Full payoff
@@ -133,7 +155,7 @@ export const optimizeLowPriorityWithHybridAvalanche = (
         newBalance: Math.round(newBalance * 100) / 100
       });
 
-      // ✅ FIX: Liberation Effect - freed budget available NEXT month
+      // ✅ Liberation Effect - freed budget available NEXT month
       if (balance > 1 && newBalance <= 1) {
         timeline.push({
           month: currentAbsoluteMonth,
@@ -144,11 +166,11 @@ export const optimizeLowPriorityWithHybridAvalanche = (
           freedCashFlow: lowPriorityDebts[i].minimumPayment
         });
         
-        // ✅ FIX: Add freed budget for NEXT month
+        // ✅ Add freed budget for NEXT month
         nextMonthBudgetIncrease += lowPriorityDebts[i].minimumPayment;
         
-        console.log(`   ✅ ${lowPriorityDebts[i].name} PAID OFF at month ${currentAbsoluteMonth}!`);
-        console.log(`   🚀 Budget Liberation: +$${lowPriorityDebts[i].minimumPayment} available from month ${currentAbsoluteMonth + 1}`);
+        // console.log(`   ✅ ${lowPriorityDebts[i].name} PAID OFF at month ${currentAbsoluteMonth}!`);
+        // console.log(`   🚀 Budget Liberation: +$${lowPriorityDebts[i].minimumPayment} available from month ${currentAbsoluteMonth + 1}`);
       }
 
       return newBalance;
@@ -157,35 +179,26 @@ export const optimizeLowPriorityWithHybridAvalanche = (
     totalInterestPaid += monthlyInterest;
     const totalDebtRemaining = currentBalances.reduce((sum, b) => sum + b, 0);
     
-    // ✅ FIX: Show actual budget used (sum of actual payments)
+    // ✅ Show actual budget used (sum of actual payments)
     const actualBudgetUsed = monthlyPaymentDetails.reduce((sum, p) => sum + p.payment, 0);
 
     projection.push({
       month: currentAbsoluteMonth,
-      strategy: 'Hybrid Avalanche (Monthly Interest Priority)',
+      strategy: strategyName, // ✅ Dynamic strategy name
       totalDebtRemaining: Math.round(totalDebtRemaining * 100) / 100,
       totalInterestPaid: Math.round(totalInterestPaid * 100) / 100,
-      budgetUsed: Math.round(actualBudgetUsed * 100) / 100, // ✅ FIX: Actual budget used
-      availableBudget: Math.round(currentBudget * 100) / 100, // ✅ ADD: Available budget for clarity
-      targetDebt: lowPriorityDebts[targetIndex].name,
-      nextMonthBudgetIncrease: Math.round(nextMonthBudgetIncrease * 100) / 100, // ✅ ADD: Show upcoming budget increase
+      budgetUsed: Math.round(actualBudgetUsed * 100) / 100,
+      availableBudget: Math.round(effectiveBudget * 100) / 100,
+      highPriorityCompleted: currentAbsoluteMonth > freedUpAvailableMonth, // ✅ Status flag
+      targetDebt: extraBudget > 0 ? lowPriorityDebts[targetIndex].name : 'None (Minimums Only)',
+      nextMonthBudgetIncrease: Math.round(nextMonthBudgetIncrease * 100) / 100,
       payments: monthlyPaymentDetails
     });
 
-    // Log progress every 12 months or major events
-    if (month % 12 === 0 || nextMonthBudgetIncrease > 0) {
-      console.log(`   Month ${currentAbsoluteMonth}: Debt $${totalDebtRemaining.toFixed(2)}, Budget Used: $${actualBudgetUsed.toFixed(2)}/$${currentBudget.toFixed(2)}`);
-      if (nextMonthBudgetIncrease > 0) {
-        console.log(`   📈 Next month budget increase: +$${nextMonthBudgetIncrease} → $${(currentBudget + nextMonthBudgetIncrease).toFixed(2)}`);
-      }
-    }
-
-    if (totalDebtRemaining <= 1) {
-      console.log(`🎉 All low-priority debts eliminated in ${month} months!`);
-      break;
-    }
+   
   }
 
+  // ✅ Return comprehensive results
   return {
     months: month,
     payments: month === 0 ? lowPriorityDebts.map(d => d.minimumPayment) : projection[0].payments.map(p => p.payment),
@@ -204,37 +217,45 @@ const selectTargetByMonthlyInterest = (
   currentBalances: number[],
   debts: DebtResponse[]
 ) => {
-  const activeDebts = currentBalances
-    .map((balance, index) => {
-      if (balance <= 1) return null;
-      
-      const monthlyInterest = balance * (debts[index].interestRate / 12);
-      return {
-        index,
-        balance,
-        monthlyInterest,
-        interestRate: debts[index].interestRate,
-        debtName: debts[index].name
-      };
-    })
-    .filter(debt => debt !== null);
+  let bestTargetIndex = 0;
+  let bestMonthlyInterest = -1;
+  let bestInterestRate = -1;
+  let foundAnyActive = false;
 
-  if (activeDebts.length === 0) return 0;
-
-  // Sort by monthly interest (primary), then by interest rate (tie-breaker)
-  const sortedDebts = activeDebts.sort((a, b) => {
-    const monthlyInterestDiff = b.monthlyInterest - a.monthlyInterest;
+  for (let i = 0; i < currentBalances.length; i++) {
+    const balance = currentBalances[i];
+    
+    // Skip inactive debts
+    if (balance <= 1) continue;
+    
+    const monthlyInterest = balance * (debts[i].interestRate / 12);
+    const interestRate = debts[i].interestRate;
+    
+    // First active debt found
+    if (!foundAnyActive) {
+      bestTargetIndex = i;
+      bestMonthlyInterest = monthlyInterest;
+      bestInterestRate = interestRate;
+      foundAnyActive = true;
+      continue;
+    }
+    
+    // Compare with current best using SAME LOGIC as before
+    const monthlyInterestDiff = monthlyInterest - bestMonthlyInterest;
     
     // If monthly interest difference is less than $5, use interest rate
     if (Math.abs(monthlyInterestDiff) < 5) {
-      return b.interestRate - a.interestRate;
+      if (interestRate > bestInterestRate) {
+        bestTargetIndex = i;
+        bestMonthlyInterest = monthlyInterest;
+        bestInterestRate = interestRate;
+      }
+    } else if (monthlyInterest > bestMonthlyInterest) {
+      bestTargetIndex = i;
+      bestMonthlyInterest = monthlyInterest;
+      bestInterestRate = interestRate;
     }
-    
-    return monthlyInterestDiff;
-  });
+  }
 
-  const target = sortedDebts[0];
-  console.log(`   🎯 Target: ${target.debtName} ($${target.monthlyInterest.toFixed(2)}/mo interest)`);
-  
-  return target.index;
+  return bestTargetIndex;
 };
