@@ -4,7 +4,6 @@ import { DebtResponse } from '../types/debts';
 import { OptimizationResult, StrategyWithLookahead } from '../types/optimization';
 import { optimizeLowPriorityWithHybridAvalanche } from './highpriority.optimization.service';
 import { MinHeap } from '../utils/priorityQueue';
-import { HeuristicCache } from '../utils/heuristicCache';
 
 const prisma = new PrismaClient();
 interface CategorizedDebts {
@@ -188,14 +187,35 @@ const optimizeWithBackwardDP = (
 };
   
   const createStateKey = (balances: number[]): number => {
-      let key = 0;
+     let hash1 = 0;
+  const primes = [982451653, 982451679, 982451707, 982451719, 982451783];
   
-  for (let i = 0; i < Math.min(balances.length, 5); i++) {
-    const discretized = Math.min(4095, discretizeBalance(balances[i]) / 10); // Scale to fit 12 bits
-    key = (key << 12) | discretized;
+  for (let i = 0; i < balances.length; i++) {
+    const discretized = discretizeBalance(balances[i]);
+    hash1 = (hash1 + (discretized * primes[i % primes.length])) >>> 0;
   }
   
-  return key;
+  // Level 2: Bit rotation with Fibonacci numbers
+  let hash2 = 0;
+  const fibonacci = [1, 1, 2, 3, 5, 8, 13, 21, 34, 55];
+  
+  for (let i = 0; i < balances.length; i++) {
+    const discretized = discretizeBalance(balances[i]);
+    hash2 = ((hash2 << 7) - hash2 + (discretized * fibonacci[i % fibonacci.length])) >>> 0;
+  }
+  
+  // Level 3: XOR with golden ratio multiplication
+  let hash3 = 0;
+  const goldenRatio = 0x9e3779b9; // (√5 - 1) / 2 * 2^32
+  
+  for (let i = 0; i < balances.length; i++) {
+    const discretized = discretizeBalance(balances[i]);
+    hash3 = (hash3 ^ (discretized * goldenRatio)) >>> 0;
+  }
+  
+  // Combine all three levels with bit mixing
+  const combined = hash1 ^ (hash2 << 11) ^ (hash3 << 21);
+  return combined >>> 0; // E
   };
 
   // 🔥 NEW: 3-month lookahead evaluation function
@@ -432,63 +452,46 @@ return [...evaluatedStrategies, ...remainingStrategies]
   };
 
   // ENHANCED A* Heuristic with Cash Flow Consideration
-  // 🚀 OPTIMIZED: Cached heuristic calculation
   const calculateHeuristic = (balances: number[]): number => {
-  const heuristicCache = new HeuristicCache();
-  // Check cache first
-  const cachedResult = heuristicCache.get(balances);
-  if (cachedResult !== undefined) {
-    return cachedResult;
-  }
-  
-  // Same calculation logic as before
-  const totalDebt = balances.reduce((a, b) => a + b, 0);
-  if (totalDebt <= 0) {
-    heuristicCache.set(balances, 0);
-    return 0;
-  }
-  
-  // Calculate current budget
-  let currentBudget = availableBudget;
-  
-  // Factor in potential freed cash flow from debts close to payoff
-  let projectedFreedCashFlow = 0;
-  balances.forEach((balance, i) => {
-    if (balance > 0 && balance <= currentBudget * 3) {
-      const monthlyInterest = balance * (debts[i].interestRate / 12);
-      const monthsToPayoff = balance / (currentBudget - monthlyInterest);
-      if (monthsToPayoff <= 3) {
-        projectedFreedCashFlow += debts[i].minimumPayment;
+    const totalDebt = balances.reduce((a, b) => a + b, 0);
+    if (totalDebt <= 0) return 0;
+    
+    // Calculate current budget
+    let currentBudget = availableBudget;
+    
+    // Factor in potential freed cash flow from debts close to payoff
+    let projectedFreedCashFlow = 0;
+    balances.forEach((balance, i) => {
+      if (balance > 0 && balance <= currentBudget * 3) {
+        const monthlyInterest = balance * (debts[i].interestRate / 12);
+        const monthsToPayoff = balance / (currentBudget - monthlyInterest);
+        if (monthsToPayoff <= 3) {
+          projectedFreedCashFlow += debts[i].minimumPayment;
+        }
       }
-    }
-  });
-  
-  // Enhanced budget calculation
-  const enhancedBudget = currentBudget + (projectedFreedCashFlow * 0.5);
-  
-  // Weighted average interest rate
-  const weightedAvgRate = debts.reduce((sum, debt, i) => {
-    return sum + (debt.interestRate * balances[i]);
-  }, 0) / totalDebt;
-  
-  // Estimate monthly principal payment
-  const estimatedMonthlyPrincipal = enhancedBudget * 0.75;
-  const estimatedMonths = Math.ceil(totalDebt / estimatedMonthlyPrincipal);
-  
-  // Cash flow complexity penalty
-  const activeDemandingDebts = balances.filter((b, i) => b > 0 && debts[i].minimumPayment > 100).length;
-  const complexityPenalty = Math.max(0, activeDemandingDebts - 1) * 0.3;
-  
-  // Liberation bonus (reward for having debts close to payoff)
-  const liberationBonus = projectedFreedCashFlow > 100 ? -1 : 0;
-  
-  const result = estimatedMonths + complexityPenalty + liberationBonus;
-  
-  // Cache the result
-  heuristicCache.set(balances, result);
-  
-  return result;
-};
+    });
+    
+    // Enhanced budget calculation
+    const enhancedBudget = currentBudget + (projectedFreedCashFlow * 0.5);
+    
+    // Weighted average interest rate
+    const weightedAvgRate = debts.reduce((sum, debt, i) => {
+      return sum + (debt.interestRate * balances[i]);
+    }, 0) / totalDebt;
+    
+    // Estimate monthly principal payment
+    const estimatedMonthlyPrincipal = enhancedBudget * 0.75;
+    const estimatedMonths = Math.ceil(totalDebt / estimatedMonthlyPrincipal);
+    
+    // Cash flow complexity penalty
+    const activeDemandingDebts = balances.filter((b, i) => b > 0 && debts[i].minimumPayment > 100).length;
+    const complexityPenalty = Math.max(0, activeDemandingDebts - 1) * 0.3;
+    
+    // Liberation bonus (reward for having debts close to payoff)
+    const liberationBonus = projectedFreedCashFlow > 100 ? -1 : 0;
+    
+    return estimatedMonths + complexityPenalty + liberationBonus;
+  };
 
   // Calculate next month's balances with better precision
   const calculateNewBalances = (currentBalances: number[], payments: number[]): number[] => {
@@ -525,7 +528,7 @@ return [...evaluatedStrategies, ...remainingStrategies]
 } => {
   // 🚀 OPTIMIZED: MinHeap Priority Queue instead of array sorting
   const openSet = new MinHeap<AStarNode>((a, b) => a.fScore - b.fScore);
- const closedSet = new Set<number>();
+  const closedSet = new Set<number>();
   const gScores = new Map<number, number>();
   
   const startKey = createStateKey(initialBalances);
