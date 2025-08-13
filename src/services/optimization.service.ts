@@ -179,7 +179,7 @@ const optimizeWithBackwardDP = (
   const lookaheadDepth = 3; // 
   
   // IMPROVED discretization - adaptive based on balance size
-const discretizeBalance = (balance: number, totalDebts: number): number => {
+const discretizeBalancediscretizeBalance = (balance: number, totalDebts: number): number => {
   if (balance <= 1) return 0;
   
   // Calculate percentage-based step size based on balance tiers
