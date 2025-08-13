@@ -1,3 +1,5 @@
+import { DebtResponse } from '../types/debts';
+
 export interface DPResult {
     totalInterest: number;
     feasible: boolean;
@@ -42,4 +44,21 @@ export interface StrategyWithLookahead {
     balancesAfterLookahead: number[];
   };
 }
+
+ export interface AStarNode {
+    balances: number[];
+    months: number;
+    path: Array<{ month: number, balances: number[], payments: number[], strategy: string }>;
+    fScore: number;
+    gScore: number;
+    hScore: number;
+}
+  
+ export interface CategorizedDebts {
+  highPriority: DebtResponse[];   // Credit cards, medical, high-interest
+  lowPriority: DebtResponse[];    // Mortgage, large auto loans
+  mediumPriority: DebtResponse[]; // Student loans, personal loans, normal auto
+}
+
+
 

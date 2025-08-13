@@ -3,7 +3,7 @@ import { PrismaClient } from '@prisma/client';
 import { DebtResponse } from '../types/debts';
 import { OptimizationResult, StrategyWithLookahead } from '../types/optimization';
 import { optimizeLowPriorityWithHybridAvalanche } from './highpriority.optimization.service';
-import { MinHeap } from '../utils/priorityQueue';
+import { BoundedMinHeap } from '../utils/priorityQueue';
 
 const prisma = new PrismaClient();
 interface CategorizedDebts {
@@ -179,11 +179,37 @@ const optimizeWithBackwardDP = (
   const lookaheadDepth = 3; // 
   
   // IMPROVED discretization - adaptive based on balance size
- const discretizeBalance = (balance: number): number => {
+const discretizeBalance = (balance: number, totalDebts: number): number => {
   if (balance <= 1) return 0;
-  if (balance <= 500) return Math.round(balance / 25) * 25;    // $25 steps for small
-  if (balance <= 5000) return Math.round(balance / 100) * 100; // $100 steps for medium  
-  return Math.round(balance / 250) * 250;                      // $250 steps for large
+  
+  // Calculate percentage-based step size based on balance tiers
+  let percentageStep: number;
+  
+  if (balance <= 1000) {
+    // Small balances: 2% precision
+    percentageStep = balance * 0.02;
+  } else if (balance <= 10000) {
+    // Medium balances: 1% precision  
+    percentageStep = balance * 0.01;
+  } else {
+    // Large balances: 0.5% precision
+    percentageStep = balance * 0.005;
+  }
+  
+  // Define min/max step limits (much smaller than your original)
+  const baseMinStep = 5;   // $5 minimum (vs your old $25)
+  const baseMaxStep = 50;  // $50 maximum (vs your old $250)
+  
+  // Adjust step sizes based on debt count (more debts = finer precision)
+  const debtCountFactor = Math.max(0.5, 1 - (totalDebts - 5) * 0.1);
+  const minStep = baseMinStep * debtCountFactor;
+  const maxStep = baseMaxStep * debtCountFactor;
+  
+  // Clamp the percentage step between min/max limits
+  const finalStep = Math.max(minStep, Math.min(maxStep, percentageStep));
+  
+  // Round to nearest step
+  return Math.round(balance / finalStep) * finalStep;
 };
   
   const createStateKey = (balances: number[]): number => {
@@ -191,7 +217,7 @@ const optimizeWithBackwardDP = (
   const primes = [982451653, 982451679, 982451707, 982451719, 982451783];
   
   for (let i = 0; i < balances.length; i++) {
-    const discretized = discretizeBalance(balances[i]);
+    const discretized = discretizeBalance(balances[i], debts.length);
     hash1 = (hash1 + (discretized * primes[i % primes.length])) >>> 0;
   }
   
@@ -200,7 +226,7 @@ const optimizeWithBackwardDP = (
   const fibonacci = [1, 1, 2, 3, 5, 8, 13, 21, 34, 55];
   
   for (let i = 0; i < balances.length; i++) {
-    const discretized = discretizeBalance(balances[i]);
+    const discretized = discretizeBalance(balances[i] , debts.length);
     hash2 = ((hash2 << 7) - hash2 + (discretized * fibonacci[i % fibonacci.length])) >>> 0;
   }
   
@@ -209,7 +235,7 @@ const optimizeWithBackwardDP = (
   const goldenRatio = 0x9e3779b9; // (√5 - 1) / 2 * 2^32
   
   for (let i = 0; i < balances.length; i++) {
-    const discretized = discretizeBalance(balances[i]);
+    const discretized = discretizeBalance(balances[i] , debts.length);
     hash3 = (hash3 ^ (discretized * goldenRatio)) >>> 0;
   }
   
@@ -237,12 +263,12 @@ const optimizeWithBackwardDP = (
         const payment = Math.min(strategy.payments[i], balance + (balance * debts[i].interestRate / 12));
         const interest = balance * (debts[i].interestRate / 12);
         const principal = payment - interest;
-        const newBalance = Math.max(0, balance - principal);
+       const newBalance = balance - principal;
         
         monthlyInterest += interest;
         monthlyPrincipal += principal;
-        
-        return discretizeBalance(newBalance);
+
+        return discretizeBalance(newBalance, debts.length);
       });
       
       totalInterestAccumulated += monthlyInterest;
@@ -501,9 +527,9 @@ return [...evaluatedStrategies, ...remainingStrategies]
       const payment = Math.min(payments[i], balance + (balance * debts[i].interestRate / 12));
       const monthlyInterest = balance * (debts[i].interestRate / 12);
       const principal = payment - monthlyInterest;
-      const newBalance = Math.max(0, balance - principal);
+      const newBalance = balance - principal;
       
-      return discretizeBalance(newBalance);
+      return discretizeBalance(newBalance, debts.length);
     });
   };
 
@@ -527,7 +553,7 @@ return [...evaluatedStrategies, ...remainingStrategies]
   path: Array<{ month: number, balances: number[], payments: number[], strategy: string }> 
 } => {
   // 🚀 OPTIMIZED: MinHeap Priority Queue instead of array sorting
-  const openSet = new MinHeap<AStarNode>((a, b) => a.fScore - b.fScore);
+  const openSet = new BoundedMinHeap<AStarNode>((a, b) => a.fScore - b.fScore,5000,'batch');
   const closedSet = new Set<number>();
   const gScores = new Map<number, number>();
   
@@ -784,7 +810,9 @@ return [...evaluatedStrategies, ...remainingStrategies]
 
   // Main execution
   const initialBalances = debts.map(debt => debt.currentAmount);
-  const discretizedInitial = initialBalances.map(discretizeBalance);
+  const discretizedInitial = initialBalances.map(balance => 
+  discretizeBalance(balance, debts.length)
+);
   
   console.log(`🎯 A* Starting balances: [${discretizedInitial.map(b => `$${b}`).join(', ')}]`);
   console.log(`💰 Available budget: $${availableBudget}, Extra budget: $${availableBudget - debts.reduce((sum, d) => sum + d.minimumPayment, 0)}`);
@@ -995,11 +1023,11 @@ export const calculateOptimalStrategy = async (userId: string): Promise<any> => 
       });
     } 
     // Show complete strategy
-    // if (optimizationResults) {
-    //   showCompleteStrategy(optimizationResults);
+     if (optimizationResults) {
+       showCompleteStrategy(optimizationResults);
     //   //showCompleteStrategy(mediumPriorityResult);
     //   //showCompleteStrategy(lowPriorityResult);
-    // }
+    }
   
     
     // console.log('\n📊 FINAL PAYMENT PLAN:');
