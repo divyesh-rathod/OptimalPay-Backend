@@ -60,7 +60,8 @@ export const validateQuery = (schema: Joi.ObjectSchema) => {
       return;
     }
 
-    req.query = value;
+    // Store validated query in a custom property instead of overwriting req.query
+    (req as any).validatedQuery = value;
     next();
   };
 };
@@ -88,7 +89,8 @@ export const validateParams = (schema: Joi.ObjectSchema) => {
       return;
     }
 
-    req.params = value;
+    // Store validated params in a custom property instead of overwriting req.params
+    (req as any).validatedParams = value;
     next();
   };
 };

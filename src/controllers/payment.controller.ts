@@ -9,7 +9,7 @@ import { sendSuccess, sendCreated } from '../utils/response';
 export const makePaymentController = async (req: Request, res: Response, next: NextFunction): Promise<void> => {
     try {
         const userId = req.user?.id;
-        const { debtId, paymentAmount, notes } = req.body;
+        const { debtId, paymentAmount, notes } = req.validatedBody || req.body;
 
         // User authentication is handled by the authenticate middleware
         if (!userId) {
@@ -39,7 +39,8 @@ export const getPaymentHistoryController = async (req: Request, res: Response, n
     try {
         const userId = req.user?.id;
         const { debtId } = req.params;
-        const { limit } = req.query;
+        const validatedQuery = req.validatedQuery || {};
+        const { limit } = validatedQuery;
 
         // User authentication is handled by the authenticate middleware
         if (!userId) {
