@@ -4,6 +4,7 @@ import { DebtResponse } from '../types/debts';
 import { OptimizationResult, StrategyWithLookahead } from '../types/optimization';
 import { optimizeLowPriorityWithHybridAvalanche } from './highpriority.optimization.service';
 import { BoundedMinHeap } from '../utils/priorityQueue';
+import { generateOptimizationExcel, generateOptimizationExcelFilename } from '../utils/excelGenerator';
 
 const prisma = new PrismaClient();
 
@@ -1059,10 +1060,31 @@ export const calculateOptimalStrategy = async (userId: string): Promise<any> => 
   }
 };
 
-export const calculateWindfallAllocation = async (userId: string, windfallAmount: number) => {
+/**
+ * Generate Excel file with complete optimization analysis
+ */
+export const generateOptimizationExcelReport = async (userId: string): Promise<{ filename: string; buffer: Buffer }> => {
   try {
-    const debts = await prisma.debt.findMany({ where: { userId, isActive: true } });
-    
+    console.log('\n📊 =============== GENERATING EXCEL REPORT ===============');
+
+    // Get the optimization results
+    const optimizationData = await calculateOptimalStrategy(userId);
+
+    // Fetch fresh data for Excel report
+    const [debts, financialProfile] = await Promise.all([
+      prisma.debt.findMany({ where: { userId, isActive: true } }),
+      prisma.financialProfile.findUnique({ where: { userId } })
+    ]);
+
+    if (!financialProfile) {
+      throw new Error('Financial profile not found');
+    }
+
+    if (debts.length === 0) {
+      throw new Error('No active debts found for Excel generation');
+    }
+
+    // Convert to proper format
     const debtResponses: DebtResponse[] = debts.map(debt => ({
       ...debt,
       originalAmount: Number(debt.originalAmount),
@@ -1073,8 +1095,170 @@ export const calculateWindfallAllocation = async (userId: string, windfallAmount
       tenure: debt.tenure ? Number(debt.tenure) : null,
     }));
 
-    return optimizeWithBackwardDP(debtResponses, windfallAmount);
+    const availableBudget = Number(financialProfile.monthly_income) - Number(financialProfile.monthly_expenses);
+
+    // Create a comprehensive projection that includes ALL debt timelines
+    const createCompleteProjection = () => {
+      // Combine all projections from high, medium, and low priority optimizations
+      let allProjections: any[] = [];
+      let totalMonths = 0;
+      let totalInterestPaid = 0;
+
+      // Add high priority projection data
+      if (optimizationData.optimizationResults?.projection?.projection) {
+        allProjections = [...optimizationData.optimizationResults.projection.projection];
+        totalMonths = Math.max(totalMonths, optimizationData.optimizationResults.projection.totalMonths || 0);
+        totalInterestPaid += optimizationData.optimizationResults.projection.totalInterestPaid || 0;
+      }
+
+      // Add medium priority projection data
+      if (optimizationData.mediumPriorityResult?.projection?.projection) {
+        const mediumProjections = optimizationData.mediumPriorityResult.projection.projection;
+        // Merge medium priority data into existing months or extend timeline
+        mediumProjections.forEach((mediumMonth: any) => {
+          const existingMonth = allProjections.find(p => p.month === mediumMonth.month);
+          if (existingMonth) {
+            // Merge payments for medium priority debts, preserving completed debt status
+            mediumMonth.payments.forEach((payment: any) => {
+              const existingPayment = existingMonth.payments.find((p: any) => p.debtName === payment.debtName);
+              if (!existingPayment) {
+                existingMonth.payments.push(payment);
+              } else if (existingPayment.newBalance <= 0.01) {
+                // Don't overwrite completed debts - keep them at 0
+                // The existing payment already shows completion, so don't merge
+              } else {
+                // Update with medium priority payment if original debt is still active
+                Object.assign(existingPayment, payment);
+              }
+            });
+          } else {
+            allProjections.push(mediumMonth);
+          }
+        });
+        totalMonths = Math.max(totalMonths, optimizationData.mediumPriorityResult.projection.totalMonths || 0);
+        totalInterestPaid += optimizationData.mediumPriorityResult.projection.totalInterestPaid || 0;
+      }
+
+      // Add low priority projection data
+      if (optimizationData.lowPriorityResult?.projection?.projection) {
+        const lowProjections = optimizationData.lowPriorityResult.projection.projection;
+        // Merge low priority data into existing months or extend timeline
+        lowProjections.forEach((lowMonth: any) => {
+          const existingMonth = allProjections.find(p => p.month === lowMonth.month);
+          if (existingMonth) {
+            // Merge payments for low priority debts, preserving completed debt status
+            lowMonth.payments.forEach((payment: any) => {
+              const existingPayment = existingMonth.payments.find((p: any) => p.debtName === payment.debtName);
+              if (!existingPayment) {
+                existingMonth.payments.push(payment);
+              } else if (existingPayment.newBalance <= 0.01) {
+                // Don't overwrite completed debts - keep them at 0
+                // The existing payment already shows completion, so don't merge
+              } else {
+                // Update with low priority payment if original debt is still active
+                Object.assign(existingPayment, payment);
+              }
+            });
+          } else {
+            allProjections.push(lowMonth);
+          }
+        });
+        totalMonths = Math.max(totalMonths, optimizationData.lowPriorityResult.projection.totalMonths || 0);
+        totalInterestPaid += optimizationData.lowPriorityResult.projection.totalInterestPaid || 0;
+      }
+
+      // Sort projections by month and ensure all debts are represented in each month
+      allProjections.sort((a, b) => a.month - b.month);
+      
+      // Track debt balances to ensure accurate reporting after completion
+      const debtBalances = new Map<string, number>();
+      
+      // Initialize debt balances with current amounts
+      debtResponses.forEach(debt => {
+        debtBalances.set(debt.name, debt.currentAmount);
+      });
+      
+      // Process each month to track debt completion accurately
+      allProjections.forEach(monthData => {
+        // Update balances based on actual payments in this month
+        monthData.payments.forEach((payment: any) => {
+          if (payment.newBalance !== undefined && payment.newBalance >= 0) {
+            debtBalances.set(payment.debtName, payment.newBalance);
+          }
+        });
+
+        // Ensure all debts are represented in this month with correct balances
+        debtResponses.forEach(debt => {
+          const existingPayment = monthData.payments.find((p: any) => p.debtName === debt.name);
+          const currentBalance = debtBalances.get(debt.name) || 0;
+          
+          if (!existingPayment) {
+            // If debt is completed (balance <= 0), show 0 values
+            if (currentBalance <= 0.01) {
+              monthData.payments.push({
+                debtName: debt.name,
+                payment: 0,
+                interest: 0,
+                principal: 0,
+                newBalance: 0
+              });
+            } else {
+              // If debt still has balance, show minimum payment
+              const monthlyInterest = (currentBalance * debt.interestRate / 100) / 12;
+              const principal = Math.max(0, debt.minimumPayment - monthlyInterest);
+              const newBalance = Math.max(0, currentBalance - principal);
+              
+              monthData.payments.push({
+                debtName: debt.name,
+                payment: debt.minimumPayment,
+                interest: Math.round(monthlyInterest * 100) / 100,
+                principal: Math.round(principal * 100) / 100,
+                newBalance: Math.round(newBalance * 100) / 100
+              });
+              
+              // Update tracked balance
+              debtBalances.set(debt.name, newBalance);
+            }
+          }
+        });
+      });
+
+      return {
+        totalMonths,
+        totalInterestPaid,
+        projection: allProjections
+      };
+    };
+
+    const completeProjection = createCompleteProjection();
+
+    // Prepare data for Excel generation (without exposing internal categorization)
+    const excelData = {
+      userInfo: {
+        userId,
+        monthlyIncome: Number(financialProfile.monthly_income),
+        monthlyExpenses: Number(financialProfile.monthly_expenses),
+        availableBudget,
+        generatedAt: new Date()
+      },
+      debts: debtResponses,
+      completeProjection
+    };
+
+    // Generate Excel file
+    console.log('📝 Creating Excel workbook with user-friendly sheets...');
+    const buffer = await generateOptimizationExcel(excelData);
+    const filename = generateOptimizationExcelFilename(userId);
+
+    console.log(`✅ Excel report generated successfully: ${filename}`);
+    console.log(`📁 File size: ${(buffer.length / 1024).toFixed(2)} KB`);
+    console.log(`📊 Timeline includes ${completeProjection.projection.length} months of projections`);
+
+    return { filename, buffer };
+
   } catch (error) {
-    throw new Error(`Windfall calculation failed: ${error}`);
+    console.error('❌ Excel generation failed:', error);
+    throw new Error(`Excel generation failed: ${error}`);
   }
 };
+
