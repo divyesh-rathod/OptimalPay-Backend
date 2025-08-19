@@ -6,169 +6,35 @@ import { optimizeLowPriorityWithHybridAvalanche } from './highpriority.optimizat
 import { createBoundedMinHeap, pushToHeap, popFromHeap, isHeapEmpty, getHeapLength } from '../utils/priorityQueue';
 import { generateOptimizationExcel, generateOptimizationExcelFilename } from '../utils/excelGenerator';
 
+// Import extracted utility modules
+import { 
+  calculateMonthlyInterestRate, 
+  calculateMonthlyInterest 
+} from './optimization/utils/interestCalculations';
+import { 
+  categorizeDebts, 
+  CategorizedDebts,
+  DEFAULT_CATEGORIZATION_CONFIG,
+  DebtCategorizationConfig 
+} from './optimization/utils/debtCategorization';
+import { 
+  allocateBudgetByPriority,
+  BudgetAllocation,
+  DEFAULT_BUDGET_ALLOCATION_CONFIG,
+  BudgetAllocationConfig 
+} from './optimization/utils/budgetAllocation';
+import { 
+  discretizeBalance,
+  calculateNewBalances,
+  createStateKey,
+  calculateTotalDebt,
+  areAllDebtsPaidOff,
+  calculateBalanceReduction,
+  DEFAULT_DISCRETIZATION_CONFIG,
+  DiscretizationConfig 
+} from './optimization/utils/balanceCalculations';
+
 const prisma = new PrismaClient();
-
-// Helper function to calculate monthly interest rate (consistent with payment service)
-const calculateMonthlyInterestRate = (annualInterestRate: number): number => {
-  return annualInterestRate / 12; // Already stored as decimal (0.2499 for 24.99%)
-};
-
-// Helper function to calculate monthly interest for a balance
-const calculateMonthlyInterest = (balance: number, annualInterestRate: number): number => {
-  return balance * calculateMonthlyInterestRate(annualInterestRate);
-};
-interface CategorizedDebts {
-  highPriority: DebtResponse[];   // Credit cards, medical, high-interest
-  lowPriority: DebtResponse[];    // Mortgage, large auto loans
-  mediumPriority: DebtResponse[]; // Student loans, personal loans, normal auto
-}
-
-const categorizeDebts = (debts: DebtResponse[]): CategorizedDebts => {
-  const highPriority: DebtResponse[] = [];
-  const lowPriority: DebtResponse[] = [];
-  const mediumPriority: DebtResponse[] = [];
-  
-  debts.forEach(debt => {
-    // RULE 1: MORTGAGE always gets minimum payment only
-    if (debt.type === 'MORTGAGE') {
-      lowPriority.push(debt);
-      console.log(`   🏠 LOW PRIORITY (Mortgage): ${debt.name} - $${debt.currentAmount.toFixed(2)} @ ${(debt.interestRate * 100).toFixed(1)}%`);
-    }
-    // RULE 2: CREDIT_CARD always high priority (high interest)
-    else if (debt.type === 'CREDIT_CARD') {
-      highPriority.push(debt);
-      console.log(`   💳 HIGH PRIORITY (Credit Card): ${debt.name} - $${debt.currentAmount.toFixed(2)} @ ${(debt.interestRate * 100).toFixed(1)}%`);
-    }
-    // RULE 3: MEDICAL_DEBT high priority (avoid collections)
-    else if (debt.type === 'MEDICAL_DEBT') {
-      highPriority.push(debt);
-      console.log(`   🏥 HIGH PRIORITY (Medical): ${debt.name} - $${debt.currentAmount.toFixed(2)}`);
-    }
-    // RULE 4: AUTO_LOAN - depends on amount
-    else if (debt.type === 'AUTO_LOAN') {
-      if (debt.currentAmount > 30000) {
-        lowPriority.push(debt);
-        console.log(`   🚗 LOW PRIORITY (Large Auto): ${debt.name} - $${debt.currentAmount.toFixed(2)} @ ${(debt.interestRate * 100).toFixed(1)}%`);
-      } else {
-        mediumPriority.push(debt);
-        console.log(`   🚙 MEDIUM PRIORITY (Auto): ${debt.name} - $${debt.currentAmount.toFixed(2)} @ ${(debt.interestRate * 100).toFixed(1)}%`);
-      }
-    }
-    // RULE 5: STUDENT_LOAN - usually medium (lower interest)
-    else if (debt.type === 'STUDENT_LOAN') {
-      if (debt.interestRate > 0.08) {
-        mediumPriority.push(debt);
-        console.log(`   🎓 MEDIUM PRIORITY (Student High Rate): ${debt.name} - $${debt.currentAmount.toFixed(2)} @ ${(debt.interestRate * 100).toFixed(1)}%`);
-      } else {
-        lowPriority.push(debt);
-        console.log(`   📚 LOW PRIORITY (Student Low Rate): ${debt.name} - $${debt.currentAmount.toFixed(2)} @ ${(debt.interestRate * 100).toFixed(1)}%`);
-      }
-    }
-    // RULE 6: PERSONAL_LOAN - depends on interest rate
-    else if (debt.type === 'PERSONAL_LOAN') {
-      if (debt.interestRate > 0.12) {
-        highPriority.push(debt);
-        console.log(`   💰 HIGH PRIORITY (Personal High Rate): ${debt.name} - $${debt.currentAmount.toFixed(2)} @ ${(debt.interestRate * 100).toFixed(1)}%`);
-      } else {
-        mediumPriority.push(debt);
-        console.log(`   💵 MEDIUM PRIORITY (Personal): ${debt.name} - $${debt.currentAmount.toFixed(2)} @ ${(debt.interestRate * 100).toFixed(1)}%`);
-      }
-    }
-    // RULE 7: OTHER - use smart logic
-    else if (debt.type === 'OTHER') {
-      // For OTHER type, use amount and interest rate to decide
-      if (debt.currentAmount > 50000 && debt.interestRate < 0.08) {
-        lowPriority.push(debt);
-        console.log(`   📦 LOW PRIORITY (Other Large): ${debt.name} - $${debt.currentAmount.toFixed(2)} @ ${(debt.interestRate * 100).toFixed(1)}%`);
-      } else if (debt.interestRate > 0.15 || debt.currentAmount < 5000) {
-        highPriority.push(debt);
-        console.log(`   ⚡ HIGH PRIORITY (Other): ${debt.name} - $${debt.currentAmount.toFixed(2)} @ ${(debt.interestRate * 100).toFixed(1)}%`);
-      } else {
-        mediumPriority.push(debt);
-        console.log(`   📋 MEDIUM PRIORITY (Other): ${debt.name} - $${debt.currentAmount.toFixed(2)} @ ${(debt.interestRate * 100).toFixed(1)}%`);
-      }
-    }
-  });
-  
-  // Summary
-  console.log(`\n   📊 Categorization Summary:`);
-  console.log(`      High Priority: ${highPriority.length} debts ($${highPriority.reduce((s,d) => s + d.currentAmount, 0).toFixed(2)})`);
-  console.log(`      Medium Priority: ${mediumPriority.length} debts ($${mediumPriority.reduce((s,d) => s + d.currentAmount, 0).toFixed(2)})`);
-  console.log(`      Low Priority: ${lowPriority.length} debts ($${lowPriority.reduce((s,d) => s + d.currentAmount, 0).toFixed(2)})`);
-  
-  return { highPriority, lowPriority, mediumPriority };
-};
-
-const allocateBudgetByPriority = (
-  categories: CategorizedDebts, 
-  totalBudget: number
-): { highBudget: number; mediumBudget: number; lowBudget: number } => {
-  // Calculate minimum payments for each category
-  const lowMinimums = categories.lowPriority.reduce((sum, d) => sum + d.minimumPayment, 0);
-  const mediumMinimums = categories.mediumPriority.reduce((sum, d) => sum + d.minimumPayment, 0);
-  const highMinimums = categories.highPriority.reduce((sum, d) => sum + d.minimumPayment, 0);
-  
-  const totalMinimums = lowMinimums + mediumMinimums + highMinimums;
-  const extraBudget = Math.max(0, totalBudget - totalMinimums);
-  
-  console.log(`\n   💰 Budget Allocation:`);
-  console.log(`      Total Budget: $${totalBudget.toFixed(2)}`);
-  console.log(`      Total Minimums: $${totalMinimums.toFixed(2)}`);
-  console.log(`      - High Priority Mins: $${highMinimums.toFixed(2)}`);
-  console.log(`      - Medium Priority Mins: $${mediumMinimums.toFixed(2)}`);
-  console.log(`      - Low Priority Mins: $${lowMinimums.toFixed(2)}`);
-  console.log(`      Extra Available: $${extraBudget.toFixed(2)}`);
-  
-  // Smart allocation based on what types of debt we have
-  let highPercentage = 0.8;   // Default: 80% to high priority
-  let mediumPercentage = 0.2; // Default: 20% to medium
-  let lowPercentage = 0.0;    // Default: 0% to low (mortgage/large loans)
-  
-  // Adjust if we have medical debt (urgent)
-  const hasMedicalDebt = categories.highPriority.some(d => d.type === 'MEDICAL_DEBT');
-  if (hasMedicalDebt) {
-    highPercentage = 0.9;  // 90% to high if medical debt exists
-    mediumPercentage = 0.1;
-  }
-  
- if (categories.highPriority.length === 0 && categories.mediumPriority.length === 0) {
-    highPercentage = 0.0;
-    mediumPercentage = 0.0;
-    lowPercentage = 1.0;  // All extra budget goes to low priority
-  }
-  // NEW: Handle case where only high priority debts exist  
-  else if (categories.mediumPriority.length === 0 && categories.lowPriority.length === 0) {
-    highPercentage = 1.0;  // All extra budget goes to high priority
-    mediumPercentage = 0.0;
-    lowPercentage = 0.0;
-  }
-  // Handle case where only medium priority debts exist
-  else if (categories.highPriority.length === 0 && categories.mediumPriority.length > 0) {
-    highPercentage = 0.0;
-    mediumPercentage = 1.0;  // All extra budget goes to medium priority
-  }
-  // NEW: Handle case where only high and low exist (no medium)
-  else if (categories.mediumPriority.length === 0) {
-    highPercentage = 0.8;   // Keep most for high priority
-    mediumPercentage = 0.0;
-    lowPercentage = 0.2;    // Some for low priority
-  }
-  
-  // If student loans are the only medium priority, maybe allocate a bit more
-  const hasOnlyStudentLoans = categories.mediumPriority.every(d => d.type === 'STUDENT_LOAN');
-  if (hasOnlyStudentLoans && categories.mediumPriority.length > 0) {
-    mediumPercentage = Math.min(0.3, mediumPercentage + 0.1);
-    highPercentage = 1.0 - mediumPercentage;
-  }
-  
-  console.log(`      Allocation Strategy: ${(highPercentage*100).toFixed(0)}% High / ${(mediumPercentage*100).toFixed(0)}% Medium / ${(lowPercentage*100).toFixed(0)}% Low`);
-  
-  return {
-    highBudget: highMinimums + (extraBudget * highPercentage),
-    mediumBudget: mediumMinimums + (extraBudget * mediumPercentage),
-    lowBudget: lowMinimums + (extraBudget * lowPercentage)
-  };
-};
 
 const optimizeWithBackwardDP = (
   debts: DebtResponse[],
@@ -188,72 +54,6 @@ const optimizeWithBackwardDP = (
   };
   
   const lookaheadDepth = 3; // 
-  
-  // IMPROVED discretization - adaptive based on balance size
-const discretizeBalance = (balance: number, totalDebts: number): number => {
-  if (balance <= 1) return 0;
-  
-  // Calculate percentage-based step size based on balance tiers
-  let percentageStep: number;
-  
-  if (balance <= 1000) {
-    // Small balances: 2% precision
-    percentageStep = balance * 0.02;
-  } else if (balance <= 10000) {
-    // Medium balances: 1% precision  
-    percentageStep = balance * 0.01;
-  } else {
-    // Large balances: 0.5% precision
-    percentageStep = balance * 0.005;
-  }
-  
-  // Define min/max step limits (much smaller than your original)
-  const baseMinStep = 5;   // $5 minimum (vs your old $25)
-  const baseMaxStep = 50;  // $50 maximum (vs your old $250)
-  
-  // Adjust step sizes based on debt count (more debts = finer precision)
-  const debtCountFactor = Math.max(0.5, 1 - (totalDebts - 5) * 0.1);
-  const minStep = baseMinStep * debtCountFactor;
-  const maxStep = baseMaxStep * debtCountFactor;
-  
-  // Clamp the percentage step between min/max limits
-  const finalStep = Math.max(minStep, Math.min(maxStep, percentageStep));
-  
-  // Round to nearest step
-  return Math.round(balance / finalStep) * finalStep;
-};
-  
-  const createStateKey = (balances: number[]): number => {
-     let hash1 = 0;
-  const primes = [982451653, 982451679, 982451707, 982451719, 982451783];
-  
-  for (let i = 0; i < balances.length; i++) {
-    const discretized = discretizeBalance(balances[i], debts.length);
-    hash1 = (hash1 + (discretized * primes[i % primes.length])) >>> 0;
-  }
-  
-  // Level 2: Bit rotation with Fibonacci numbers
-  let hash2 = 0;
-  const fibonacci = [1, 1, 2, 3, 5, 8, 13, 21, 34, 55];
-  
-  for (let i = 0; i < balances.length; i++) {
-    const discretized = discretizeBalance(balances[i] , debts.length);
-    hash2 = ((hash2 << 7) - hash2 + (discretized * fibonacci[i % fibonacci.length])) >>> 0;
-  }
-  
-  // Level 3: XOR with golden ratio multiplication
-  let hash3 = 0;
-  const goldenRatio = 0x9e3779b9; // (√5 - 1) / 2 * 2^32
-  
-  for (let i = 0; i < balances.length; i++) {
-    const discretized = discretizeBalance(balances[i] , debts.length);
-    hash3 = (hash3 ^ (discretized * goldenRatio)) >>> 0;
-  }
-  
-  // Combine all three levels with bit mixing
-  const combined = hash1 ^ (hash2 << 11) ^ (hash3 << 21);
-  return combined >>> 0; // E
-  };
 
   // 🔥 NEW: 3-month lookahead evaluation function
   const evaluateStrategyWithLookahead = (currentBalances: number[], strategy: any) => {
@@ -530,20 +330,6 @@ return [...evaluatedStrategies, ...remainingStrategies]
     return estimatedMonths + complexityPenalty + liberationBonus;
   };
 
-  // Calculate next month's balances with better precision
-  const calculateNewBalances = (currentBalances: number[], payments: number[]): number[] => {
-    return currentBalances.map((balance, i) => {
-      if (balance <= 5) return 0;
-      
-      const payment = Math.min(payments[i], balance + calculateMonthlyInterest(balance, debts[i].interestRate));
-      const monthlyInterest = calculateMonthlyInterest(balance, debts[i].interestRate);
-      const principal = payment - monthlyInterest;
-      const newBalance = balance - principal;
-      
-      return discretizeBalance(newBalance, debts.length);
-    });
-  };
-
   // A* Priority Queue Node
   interface AStarNode {
     balances: number[];
@@ -568,7 +354,7 @@ return [...evaluatedStrategies, ...remainingStrategies]
   const closedSet = new Set<number>();
   const gScores = new Map<number, number>();
   
-  const startKey = createStateKey(initialBalances);
+  const startKey = createStateKey(initialBalances, debts.length);
   const initialHeuristic = calculateHeuristic(initialBalances);
   
   const startNode: AStarNode = { 
@@ -598,7 +384,7 @@ return [...evaluatedStrategies, ...remainingStrategies]
     
     // 🚀 OPTIMIZED: O(log n) extraction instead of O(n log n) sort + O(n) shift
     const current = popFromHeap(openSet)!;
-    const currentKey = createStateKey(current.balances);
+    const currentKey = createStateKey(current.balances, debts.length);
     
     // Move to closed set
     closedSet.add(currentKey);
@@ -624,8 +410,8 @@ return [...evaluatedStrategies, ...remainingStrategies]
     const strategies = getPaymentStrategies(current.balances, currentAbsoluteMonth);
     
     for (const strategy of strategies as StrategyWithLookahead[]) {
-      const newBalances = calculateNewBalances(current.balances, strategy.payments);
-      const newKey = createStateKey(newBalances);
+      const newBalances = calculateNewBalances(current.balances, strategy.payments, debts);
+      const newKey = createStateKey(newBalances, debts.length);
       
       // SAME PRUNING LOGIC - Maintains optimality
       const oldTotal = current.balances.reduce((a: number, b: number) => a + b, 0);
@@ -700,7 +486,7 @@ return [...evaluatedStrategies, ...remainingStrategies]
       strategy: avalancheStrategy.name
     });
     
-    currentBalances = calculateNewBalances(currentBalances, avalancheStrategy.payments);
+    currentBalances = calculateNewBalances(currentBalances, avalancheStrategy.payments, debts);
     
     if (currentBalances.every(b => b <= 5)) {
       console.log(`✅ Fallback strategy completes in ${month} months`);
