@@ -6,6 +6,16 @@ import { optimizeLowPriorityWithHybridAvalanche } from './highpriority.optimizat
 import { BoundedMinHeap } from '../utils/priorityQueue';
 
 const prisma = new PrismaClient();
+
+// Helper function to calculate monthly interest rate (consistent with payment service)
+const calculateMonthlyInterestRate = (annualInterestRate: number): number => {
+  return annualInterestRate / 12; // Already stored as decimal (0.2499 for 24.99%)
+};
+
+// Helper function to calculate monthly interest for a balance
+const calculateMonthlyInterest = (balance: number, annualInterestRate: number): number => {
+  return balance * calculateMonthlyInterestRate(annualInterestRate);
+};
 interface CategorizedDebts {
   highPriority: DebtResponse[];   // Credit cards, medical, high-interest
   lowPriority: DebtResponse[];    // Mortgage, large auto loans
@@ -179,7 +189,7 @@ const optimizeWithBackwardDP = (
   const lookaheadDepth = 3; // 
   
   // IMPROVED discretization - adaptive based on balance size
-const discretizeBalancediscretizeBalance = (balance: number, totalDebts: number): number => {
+const discretizeBalance = (balance: number, totalDebts: number): number => {
   if (balance <= 1) return 0;
   
   // Calculate percentage-based step size based on balance tiers
@@ -260,8 +270,8 @@ const discretizeBalancediscretizeBalance = (balance: number, totalDebts: number)
       tempBalances = tempBalances.map((balance, i) => {
         if (balance <= 5) return 0;
         
-        const payment = Math.min(strategy.payments[i], balance + (balance * debts[i].interestRate / 12));
-        const interest = balance * (debts[i].interestRate / 12);
+        const payment = Math.min(strategy.payments[i], balance + calculateMonthlyInterest(balance, debts[i].interestRate));
+        const interest = calculateMonthlyInterest(balance, debts[i].interestRate);
         const principal = payment - interest;
        const newBalance = balance - principal;
         
@@ -318,7 +328,7 @@ const discretizeBalancediscretizeBalance = (balance: number, totalDebts: number)
     
     // Get active debts with enhanced analysis
     const activeDebts = balances.map((balance, index) => {
-      const monthlyInterest = balance * (debts[index].interestRate / 12);
+      const monthlyInterest = calculateMonthlyInterest(balance, debts[index].interestRate);
       const maxPayment = Math.min(extraBudget + minimums[index], balance + monthlyInterest);
       const monthsToPayoff = balance / (maxPayment - monthlyInterest);
       
@@ -346,7 +356,7 @@ const discretizeBalancediscretizeBalance = (balance: number, totalDebts: number)
     for (const debt of immediatePayoffs) {
       const liberationPayments = [...minimums];
       const actualBalance = debts[debt.index].currentAmount; // Use real balance
-      const actualInterest = actualBalance * (debts[debt.index].interestRate / 12);
+      const actualInterest = calculateMonthlyInterest(actualBalance, debts[debt.index].interestRate);
       const totalNeeded = actualBalance + actualInterest;
       liberationPayments[debt.index] = Math.min(totalNeeded, availableBudget);
       strategies.push({ 
@@ -489,7 +499,7 @@ return [...evaluatedStrategies, ...remainingStrategies]
     let projectedFreedCashFlow = 0;
     balances.forEach((balance, i) => {
       if (balance > 0 && balance <= currentBudget * 3) {
-        const monthlyInterest = balance * (debts[i].interestRate / 12);
+        const monthlyInterest = calculateMonthlyInterest(balance, debts[i].interestRate);
         const monthsToPayoff = balance / (currentBudget - monthlyInterest);
         if (monthsToPayoff <= 3) {
           projectedFreedCashFlow += debts[i].minimumPayment;
@@ -502,7 +512,7 @@ return [...evaluatedStrategies, ...remainingStrategies]
     
     // Weighted average interest rate
     const weightedAvgRate = debts.reduce((sum, debt, i) => {
-      return sum + (debt.interestRate * balances[i]);
+      return sum + (calculateMonthlyInterestRate(debt.interestRate) * balances[i]);
     }, 0) / totalDebt;
     
     // Estimate monthly principal payment
@@ -524,8 +534,8 @@ return [...evaluatedStrategies, ...remainingStrategies]
     return currentBalances.map((balance, i) => {
       if (balance <= 5) return 0;
       
-      const payment = Math.min(payments[i], balance + (balance * debts[i].interestRate / 12));
-      const monthlyInterest = balance * (debts[i].interestRate / 12);
+      const payment = Math.min(payments[i], balance + calculateMonthlyInterest(balance, debts[i].interestRate));
+      const monthlyInterest = calculateMonthlyInterest(balance, debts[i].interestRate);
       const principal = payment - monthlyInterest;
       const newBalance = balance - principal;
       
@@ -738,7 +748,7 @@ return [...evaluatedStrategies, ...remainingStrategies]
       }
 
       const payment = payments[i];
-      const interest = balance * (debts[i].interestRate / 12);
+      const interest = calculateMonthlyInterest(balance, debts[i].interestRate);
 
       let principal, newBalance;
 

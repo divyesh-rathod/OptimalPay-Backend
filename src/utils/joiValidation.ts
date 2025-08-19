@@ -154,7 +154,7 @@ export const updateDebtSchema = joi.object({
     
     originalAmount: joi.number()
         .positive()
-        .max(10000000) // 10 million max
+        .max(100000000) // 100 million max
         .precision(2)  // 2 decimal places
         .required()
         .messages({
@@ -202,5 +202,59 @@ export const uuidParamSchema = joi.object({
         .messages({
             'string.guid': 'Invalid ID format. Must be a valid UUID.',
             'any.required': 'ID is required'
+        })
+});
+
+// Payment validation schemas
+export const makePaymentSchema = joi.object({
+    debtId: joi.string()
+        .uuid({ version: ['uuidv4'] })
+        .required()
+        .messages({
+            'string.guid': 'Invalid debt ID format. Must be a valid UUID.',
+            'any.required': 'Debt ID is required'
+        }),
+    
+    paymentAmount: joi.number()
+        .positive()
+        .max(1000000) // $1 million max payment
+        .precision(2) // 2 decimal places
+        .required()
+        .messages({
+            'number.positive': 'Payment amount must be greater than 0',
+            'number.max': 'Payment amount cannot exceed $1,000,000',
+            'any.required': 'Payment amount is required'
+        }),
+    
+    notes: joi.string()
+        .trim()
+        .max(500)
+        .optional()
+        .allow('', null)
+        .messages({
+            'string.max': 'Notes must be less than 500 characters'
+        })
+});
+
+export const debtIdParamSchema = joi.object({
+    debtId: joi.string()
+        .uuid({ version: ['uuidv4'] })
+        .required()
+        .messages({
+            'string.guid': 'Invalid debt ID format. Must be a valid UUID.',
+            'any.required': 'Debt ID is required'
+        })
+});
+
+export const paymentHistoryQuerySchema = joi.object({
+    limit: joi.number()
+        .integer()
+        .min(1)
+        .max(1000)
+        .optional()
+        .messages({
+            'number.integer': 'Limit must be a whole number',
+            'number.min': 'Limit must be at least 1',
+            'number.max': 'Limit cannot exceed 1000'
         })
 });
