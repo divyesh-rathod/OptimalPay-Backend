@@ -140,13 +140,13 @@ export const generateOptimizationExcel = async (data: OptimizationExcelData): Pr
 
   // Format debt sheet columns
   debtSheet.columns = [
-    { width: 20 }, // Debt Name
-    { width: 15 }, // Type
-    { width: 15 }, // Current Amount
-    { width: 12 }, // Interest Rate
-    { width: 15 }, // Minimum Payment
-    { width: 15 }, // Original Amount
-    { width: 15 }  // Remaining Tenure
+    { width: 35 }, // Debt Name
+    { width: 35 }, // Type
+    { width: 35 }, // Current Amount
+    { width: 35 }, // Interest Rate
+    { width: 35 }, // Minimum Payment
+    { width: 35 }, // Original Amount
+    { width: 35 }  // Remaining Tenure
   ];
 
   // 📅 MONTHLY PROJECTION SHEET

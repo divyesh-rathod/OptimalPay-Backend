@@ -3,7 +3,7 @@ import { PrismaClient } from '@prisma/client';
 import { DebtResponse } from '../types/debts';
 import { OptimizationResult, StrategyWithLookahead } from '../types/optimization';
 import { optimizeLowPriorityWithHybridAvalanche } from './highpriority.optimization.service';
-import { BoundedMinHeap } from '../utils/priorityQueue';
+import { createBoundedMinHeap, pushToHeap, popFromHeap, isHeapEmpty, getHeapLength } from '../utils/priorityQueue';
 import { generateOptimizationExcel, generateOptimizationExcelFilename } from '../utils/excelGenerator';
 
 const prisma = new PrismaClient();
@@ -564,7 +564,7 @@ return [...evaluatedStrategies, ...remainingStrategies]
   path: Array<{ month: number, balances: number[], payments: number[], strategy: string }> 
 } => {
   // 🚀 OPTIMIZED: MinHeap Priority Queue instead of array sorting
-  const openSet = new BoundedMinHeap<AStarNode>((a, b) => a.fScore - b.fScore,5000,'batch');
+  let openSet = createBoundedMinHeap<AStarNode>((a, b) => a.fScore - b.fScore, 5000, 'batch');
   const closedSet = new Set<number>();
   const gScores = new Map<number, number>();
   
@@ -581,7 +581,7 @@ return [...evaluatedStrategies, ...remainingStrategies]
   };
   
   // 🚀 OPTIMIZED: O(log n) insertion instead of O(n) push
-  openSet.push(startNode);
+  pushToHeap(openSet, startNode);
   gScores.set(startKey, 0);
   
   let iterations = 0;
@@ -593,24 +593,24 @@ return [...evaluatedStrategies, ...remainingStrategies]
   console.log(`🎯 Initial heuristic estimate: ${initialHeuristic} months`);
   
   // 🚀 OPTIMIZED: No more expensive array sorting!
-  while (!openSet.isEmpty() && iterations < MAX_ITERATIONS) {
+  while (!isHeapEmpty(openSet) && iterations < MAX_ITERATIONS) {
     iterations++;
     
     // 🚀 OPTIMIZED: O(log n) extraction instead of O(n log n) sort + O(n) shift
-    const current = openSet.pop()!;
+    const current = popFromHeap(openSet)!;
     const currentKey = createStateKey(current.balances);
     
     // Move to closed set
     closedSet.add(currentKey);
     
     // Base case: all debts paid off - SAME OPTIMAL LOGIC
-    if (current.balances.every(b => b <= 5)) {
+    if (current.balances.every((b: number) => b <= 5)) {
       console.log(`✅ A* Found optimal solution in ${current.months} months after ${iterations} iterations`);
       return { months: current.months, path: current.path };
     }
     
     // Track best partial solution - SAME QUALITY TRACKING
-    const totalDebt = current.balances.reduce((a, b) => a + b, 0);
+    const totalDebt = current.balances.reduce((a: number, b: number) => a + b, 0);
     if (!bestSolutionFound || totalDebt < bestSolutionFound.totalDebt || 
         (totalDebt === bestSolutionFound.totalDebt && current.months < bestSolutionFound.months)) {
       bestSolutionFound = { months: current.months, path: current.path, totalDebt };
@@ -628,8 +628,8 @@ return [...evaluatedStrategies, ...remainingStrategies]
       const newKey = createStateKey(newBalances);
       
       // SAME PRUNING LOGIC - Maintains optimality
-      const oldTotal = current.balances.reduce((a, b) => a + b, 0);
-      const newTotal = newBalances.reduce((a, b) => a + b, 0);
+      const oldTotal = current.balances.reduce((a: number, b: number) => a + b, 0);
+      const newTotal = newBalances.reduce((a: number, b: number) => a + b, 0);
       if (newTotal >= oldTotal) continue;
       
       if (closedSet.has(newKey)) continue;
@@ -665,13 +665,13 @@ return [...evaluatedStrategies, ...remainingStrategies]
       };
       
       // 🚀 OPTIMIZED: O(log n) insertion maintains heap property automatically
-      openSet.push(neighborNode);
+      pushToHeap(openSet, neighborNode);
     }
     
     // Progress logging - show queue size improvement
     if (iterations % 20000 === 0) {
-      const currentDebt = current.balances.reduce((a, b) => a + b, 0);
-      console.log(`   🔍 A* Iteration ${iterations}, Queue: ${openSet.length}, Month: ${current.months}, Debt: $${currentDebt}, F: ${current.fScore.toFixed(1)}`);
+      const currentDebt = current.balances.reduce((a: number, b: number) => a + b, 0);
+      console.log(`   🔍 A* Iteration ${iterations}, Queue: ${getHeapLength(openSet)}, Month: ${current.months}, Debt: $${currentDebt}, F: ${current.fScore.toFixed(1)}`);
     }
   }
   

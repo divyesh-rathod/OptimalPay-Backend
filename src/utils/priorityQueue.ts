@@ -1,99 +1,107 @@
-export class BoundedMinHeap<T> {
-  private heap: T[] = [];
-  private compare: (a: T, b: T) => number;
-  private maxCapacity: number;
-  private evictionStrategy: 'strict' | 'batch' | 'percentage';
-  private evictionThreshold: number;
+// Functional Priority Queue Implementation
+// Converted from OOP to functional style while maintaining all logic and parameters
 
-  constructor(
-    compareFunction: (a: T, b: T) => number,
-    maxCapacity: number = 100000, // Default: 100K nodes max
-    evictionStrategy: 'strict' | 'batch' | 'percentage' = 'batch'
-  ) {
-    this.compare = compareFunction;
-    this.maxCapacity = maxCapacity;
-    this.evictionStrategy = evictionStrategy;
+export interface BoundedMinHeapState<T> {
+  heap: T[];
+  compare: (a: T, b: T) => number;
+  maxCapacity: number;
+  evictionStrategy: 'strict' | 'batch' | 'percentage';
+  evictionThreshold: number;
+}
+
+// Helper functions for heap operations
+const getParentIndex = (index: number): number => {
+  return Math.floor((index - 1) / 2);
+};
+
+const getLeftChildIndex = (index: number): number => {
+  return 2 * index + 1;
+};
+
+const getRightChildIndex = (index: number): number => {
+  return 2 * index + 2;
+};
+
+const swap = <T>(heap: T[], index1: number, index2: number): void => {
+  [heap[index1], heap[index2]] = [heap[index2], heap[index1]];
+};
+
+const heapifyUp = <T>(state: BoundedMinHeapState<T>, index: number): void => {
+  while (index > 0) {
+    const parentIndex = getParentIndex(index);
+    if (state.compare(state.heap[index], state.heap[parentIndex]) >= 0) break;
+    swap(state.heap, index, parentIndex);
+    index = parentIndex;
+  }
+};
+
+const heapifyDown = <T>(state: BoundedMinHeapState<T>, index: number): void => {
+  while (getLeftChildIndex(index) < state.heap.length) {
+    const leftChildIndex = getLeftChildIndex(index);
+    const rightChildIndex = getRightChildIndex(index);
     
-    // Set eviction threshold (when to start removing)
-    this.evictionThreshold = Math.floor(maxCapacity * 0.9); // Start evicting at 90% full
-  }
-
-  private getParentIndex(index: number): number {
-    return Math.floor((index - 1) / 2);
-  }
-
-  private getLeftChildIndex(index: number): number {
-    return 2 * index + 1;
-  }
-
-  private getRightChildIndex(index: number): number {
-    return 2 * index + 2;
-  }
-
-  private swap(index1: number, index2: number): void {
-    [this.heap[index1], this.heap[index2]] = [this.heap[index2], this.heap[index1]];
-  }
-
-  private heapifyUp(index: number): void {
-    while (index > 0) {
-      const parentIndex = this.getParentIndex(index);
-      if (this.compare(this.heap[index], this.heap[parentIndex]) >= 0) break;
-      this.swap(index, parentIndex);
-      index = parentIndex;
-    }
-  }
-
-  private heapifyDown(index: number): void {
-    while (this.getLeftChildIndex(index) < this.heap.length) {
-      const leftChildIndex = this.getLeftChildIndex(index);
-      const rightChildIndex = this.getRightChildIndex(index);
-      
-      let smallestChildIndex = leftChildIndex;
-      if (
-        rightChildIndex < this.heap.length &&
-        this.compare(this.heap[rightChildIndex], this.heap[leftChildIndex]) < 0
-      ) {
-        smallestChildIndex = rightChildIndex;
-      }
-
-      if (this.compare(this.heap[index], this.heap[smallestChildIndex]) <= 0) break;
-      
-      this.swap(index, smallestChildIndex);
-      index = smallestChildIndex;
-    }
-  }
-
-  private evictWorstNodes(): void {
-    if (this.heap.length <= this.evictionThreshold) return;
-
-    
-
-    let nodesToRemove: number;
-    
-    switch (this.evictionStrategy) {
-      case 'strict':
-        nodesToRemove = 1;
-        break;
-      case 'batch':
-        nodesToRemove = Math.floor(this.heap.length * 0.1); // Remove 10%
-        break;
-      case 'percentage':
-        nodesToRemove = Math.floor(this.heap.length * 0.25); // Remove 25%
-        break;
-      default:
-        nodesToRemove = Math.floor(this.heap.length * 0.1);
+    let smallestChildIndex = leftChildIndex;
+    if (
+      rightChildIndex < state.heap.length &&
+      state.compare(state.heap[rightChildIndex], state.heap[leftChildIndex]) < 0
+    ) {
+      smallestChildIndex = rightChildIndex;
     }
 
-     // 🔧 FIX: Use compare function instead of accessing fScore directly
-  const currentBest = this.heap[0]; // Best node (lowest f-score)
+    if (state.compare(state.heap[index], state.heap[smallestChildIndex]) <= 0) break;
+    
+    swap(state.heap, index, smallestChildIndex);
+    index = smallestChildIndex;
+  }
+};
+
+const removeAtIndex = <T>(state: BoundedMinHeapState<T>, index: number): void => {
+  if (index >= state.heap.length) return;
+  
+  // Replace with last element
+  state.heap[index] = state.heap[state.heap.length - 1];
+  state.heap.pop();
+  
+  if (index < state.heap.length) {
+    // Try heapifying both directions
+    const parentIndex = getParentIndex(index);
+    if (index > 0 && state.compare(state.heap[index], state.heap[parentIndex]) < 0) {
+      heapifyUp(state, index);
+    } else {
+      heapifyDown(state, index);
+    }
+  }
+};
+
+const evictWorstNodes = <T>(state: BoundedMinHeapState<T>): void => {
+  if (state.heap.length <= state.evictionThreshold) return;
+
+  let nodesToRemove: number;
+  
+  switch (state.evictionStrategy) {
+    case 'strict':
+      nodesToRemove = 1;
+      break;
+    case 'batch':
+      nodesToRemove = Math.floor(state.heap.length * 0.1); // Remove 10%
+      break;
+    case 'percentage':
+      nodesToRemove = Math.floor(state.heap.length * 0.25); // Remove 25%
+      break;
+    default:
+      nodesToRemove = Math.floor(state.heap.length * 0.1);
+  }
+
+  // 🔧 FIX: Use compare function instead of accessing fScore directly
+  const currentBest = state.heap[0]; // Best node (lowest f-score)
   
   // Find nodes that are significantly worse than current best
   const protectedNodes: T[] = [];
   const evictionCandidates: { node: T; index: number }[] = [];
   
-  for (let i = 0; i < this.heap.length; i++) {
-    const node = this.heap[i];
-    const compareResult = this.compare(node, currentBest);
+  for (let i = 0; i < state.heap.length; i++) {
+    const node = state.heap[i];
+    const compareResult = state.compare(node, currentBest);
     
     // If node is much worse than current best (compare > 2.0), it's a candidate for eviction
     if (compareResult > 2.0) {
@@ -111,7 +119,7 @@ export class BoundedMinHeap<T> {
   }
 
   // Sort eviction candidates by how bad they are (worst first)
-  evictionCandidates.sort((a, b) => this.compare(b.node, a.node));
+  evictionCandidates.sort((a, b) => state.compare(b.node, a.node));
   
   // Remove the worst nodes
   const indicesToRemove = evictionCandidates
@@ -120,111 +128,106 @@ export class BoundedMinHeap<T> {
     .sort((a, b) => b - a); // Remove from end to avoid index shifting
 
   for (const index of indicesToRemove) {
-    this.removeAtIndex(index);
+    removeAtIndex(state, index);
   }
+};
+
+// Factory function to create a new bounded min heap state
+export const createBoundedMinHeap = <T>(
+  compareFunction: (a: T, b: T) => number,
+  maxCapacity: number = 100000, // Default: 100K nodes max
+  evictionStrategy: 'strict' | 'batch' | 'percentage' = 'batch'
+): BoundedMinHeapState<T> => {
+  const evictionThreshold = Math.floor(maxCapacity * 0.9); // Start evicting at 90% full
+  
+  return {
+    heap: [],
+    compare: compareFunction,
+    maxCapacity,
+    evictionStrategy,
+    evictionThreshold
+  };
+};
+
+// 🚀 ENHANCED PUSH FUNCTION WITH CAPACITY MANAGEMENT
+export const pushToHeap = <T>(state: BoundedMinHeapState<T>, item: T): void => {
+  // Check if we need to evict nodes first
+  if (state.heap.length >= state.evictionThreshold) {
+    evictWorstNodes(state);
   }
 
-  private removeAtIndex(index: number): void {
-    if (index >= this.heap.length) return;
-    
-    // Replace with last element
-    this.heap[index] = this.heap[this.heap.length - 1];
-    this.heap.pop();
-    
-    if (index < this.heap.length) {
-      // Try heapifying both directions
-      const parentIndex = this.getParentIndex(index);
-      if (index > 0 && this.compare(this.heap[index], this.heap[parentIndex]) < 0) {
-        this.heapifyUp(index);
-      } else {
-        this.heapifyDown(index);
+  // If still at max capacity after eviction, force remove one worst node
+  if (state.heap.length >= state.maxCapacity) {
+    // Find and remove the worst single node
+    let worstIndex = 0;
+    for (let i = 1; i < state.heap.length; i++) {
+      if (state.compare(state.heap[i], state.heap[worstIndex]) > 0) {
+        worstIndex = i;
       }
     }
+    removeAtIndex(state, worstIndex);
   }
 
-  // 🚀 ENHANCED PUSH METHOD WITH CAPACITY MANAGEMENT
-  push(item: T): void {
-    // Check if we need to evict nodes first
-    if (this.heap.length >= this.evictionThreshold) {
-      this.evictWorstNodes();
-    }
+  // Add the new item
+  state.heap.push(item);
+  heapifyUp(state, state.heap.length - 1);
+};
 
-    // If still at max capacity after eviction, force remove one worst node
-    if (this.heap.length >= this.maxCapacity) {
-      // Find and remove the worst single node
-      let worstIndex = 0;
-      for (let i = 1; i < this.heap.length; i++) {
-        if (this.compare(this.heap[i], this.heap[worstIndex]) > 0) {
-          worstIndex = i;
-        }
-      }
-      this.removeAtIndex(worstIndex);
-    }
+// Pop function
+export const popFromHeap = <T>(state: BoundedMinHeapState<T>): T | undefined => {
+  if (state.heap.length === 0) return undefined;
+  if (state.heap.length === 1) return state.heap.pop();
 
-    // Add the new item
-    this.heap.push(item);
-    this.heapifyUp(this.heap.length - 1);
+  const root = state.heap[0];
+  state.heap[0] = state.heap.pop()!;
+  heapifyDown(state, 0);
+  return root;
+};
+
+// Utility functions
+export const getHeapLength = <T>(state: BoundedMinHeapState<T>): number => {
+  return state.heap.length;
+};
+
+export const isHeapEmpty = <T>(state: BoundedMinHeapState<T>): boolean => {
+  return state.heap.length === 0;
+};
+
+export const peekHeap = <T>(state: BoundedMinHeapState<T>): T | undefined => {
+  return state.heap.length > 0 ? state.heap[0] : undefined;
+};
+
+// 🚀 NEW UTILITY FUNCTIONS
+export const getCurrentCapacity = <T>(state: BoundedMinHeapState<T>): number => {
+  return state.heap.length;
+};
+
+export const getMaxCapacity = <T>(state: BoundedMinHeapState<T>): number => {
+  return state.maxCapacity;
+};
+
+export const getCapacityUsage = <T>(state: BoundedMinHeapState<T>): number => {
+  return (state.heap.length / state.maxCapacity) * 100;
+};
+
+// Force cleanup if needed
+export const forceEviction = <T>(state: BoundedMinHeapState<T>, percentage: number = 0.5): number => {
+  const targetSize = Math.floor(state.heap.length * (1 - percentage));
+  const nodesToRemove = state.heap.length - targetSize;
+  
+  if (nodesToRemove <= 0) return 0;
+
+  const sortedIndices = Array.from({ length: state.heap.length }, (_, i) => i)
+    .sort((a, b) => state.compare(state.heap[b], state.heap[a]));
+
+  const indicesToRemove = sortedIndices.slice(0, nodesToRemove).sort((a, b) => b - a);
+  
+  for (const index of indicesToRemove) {
+    removeAtIndex(state, index);
   }
 
-  // Existing methods remain the same
-  pop(): T | undefined {
-    if (this.heap.length === 0) return undefined;
-    if (this.heap.length === 1) return this.heap.pop();
+  return nodesToRemove;
+};
 
-    const root = this.heap[0];
-    this.heap[0] = this.heap.pop()!;
-    this.heapifyDown(0);
-    return root;
-  }
-
-  get length(): number {
-    return this.heap.length;
-  }
-
-  isEmpty(): boolean {
-    return this.heap.length === 0;
-  }
-
-  peek(): T | undefined {
-    return this.heap.length > 0 ? this.heap[0] : undefined;
-  }
-
-  // 🚀 NEW UTILITY METHODS
-  getCurrentCapacity(): number {
-    return this.heap.length;
-  }
-
-  getMaxCapacity(): number {
-    return this.maxCapacity;
-  }
-
-  getCapacityUsage(): number {
-    return (this.heap.length / this.maxCapacity) * 100;
-  }
-
-  // Force cleanup if needed
-  forceEviction(percentage: number = 0.5): number {
-    const targetSize = Math.floor(this.heap.length * (1 - percentage));
-    const nodesToRemove = this.heap.length - targetSize;
-    
-    if (nodesToRemove <= 0) return 0;
-
-    const sortedIndices = Array.from({ length: this.heap.length }, (_, i) => i)
-      .sort((a, b) => this.compare(this.heap[b], this.heap[a]));
-
-    const indicesToRemove = sortedIndices.slice(0, nodesToRemove).sort((a, b) => b - a);
-    
-    for (const index of indicesToRemove) {
-      this.removeAtIndex(index);
-    }
-
-    return nodesToRemove;
-  }
-}
-
-// Keep the old MinHeap for backward compatibility
-export class MinHeap<T> extends BoundedMinHeap<T> {
-  constructor(compareFunction: (a: T, b: T) => number) {
-    super(compareFunction, Infinity, 'batch'); // Unlimited capacity
-  }
-}
+// Pure functional implementation - no classes
+// All functionality is now available through functions
