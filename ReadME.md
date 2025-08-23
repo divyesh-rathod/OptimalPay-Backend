@@ -227,7 +227,7 @@ const createStateKey = (balances: number[]): number => {
 
 - **Node.js** (v16 or higher)
 - **PostgreSQL** (v12 or higher) 
-- **npm/yarn** package manager
+- **pnpm/yarn** package manager
 - **Git** version control
 
 ---
@@ -241,7 +241,7 @@ git clone https://github.com/yourusername/OptimalPay-Backend.git
 cd OptimalPay-Backend
 
 # Install dependencies
-npm install
+pnp install
 ```
 
 ### 2. Environment Configuration
@@ -258,8 +258,6 @@ JWT_EXPIRES_IN="7d"
 PORT=3000
 NODE_ENV="development"
 
-# Optional: Performance Testing
-ENABLE_BENCHMARKING="false"
 ```
 
 ### 3. Database Setup
@@ -277,14 +275,13 @@ npx prisma db seed
 ### 4. Development Server
 ```bash
 # Development mode with hot reload
-npm run dev
+pnpm run dev
 
 # Production build and start
-npm run build
-npm start
+pnpm run build
+pnpm start
 
-# Run with performance benchmarking
-ENABLE_BENCHMARKING=true npm run dev
+
 ```
 
 ---
@@ -402,15 +399,6 @@ I welcome contributions from developers, financial experts, and algorithm enthus
 - **Algorithm Changes**: Maintain O(log n) performance characteristics where possible
 - **Code Quality**: Follow TypeScript strict mode with comprehensive testing
 - **Documentation**: Update API docs and algorithm explanations for changes
-- **Testing**: Include benchmarks for performance-related modifications
-
-### Contribution Process
-1. Fork the repository and create a feature branch
-2. Implement changes with comprehensive tests
-3. Run benchmarking suite to validate performance
-4. Update documentation for API or algorithm changes
-5. Submit pull request with detailed explanation
-
 ---
 
 ## 📝 License
