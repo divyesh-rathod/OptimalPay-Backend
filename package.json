@@ -35,7 +35,7 @@
     "javascript-lp-solver": "^0.4.24",
     "joi": "^17.13.3",
     "jsonwebtoken": "^9.0.2",
-    "lodash": "^4.17.21",
+    "lodash": "^4.17.23",
     "mathjs": "^14.5.3",
     "morgan": "^1.10.0",
     "multer": "^2.0.1",
